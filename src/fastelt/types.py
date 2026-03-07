@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -9,6 +10,54 @@ from typing import Any, Generic, TypeVar
 from pydantic import BaseModel, PrivateAttr, create_model
 
 T = TypeVar("T", bound=BaseModel)
+
+_UNSET = object()
+
+
+class Env:
+    """Lazy reference to an environment variable.
+
+    Resolves the value when ``resolve()`` is called (typically at Source
+    construction time), not at import time.  This gives three advantages
+    over a bare ``os.getenv``:
+
+    * **Lazy** — the var is read when the Source is used, not when the
+      module is imported.
+    * **Fail-fast** — raises immediately with a clear message if the var
+      is missing and no *default* was provided.
+    * **Declarative** — the Source definition shows *which* values come
+      from the environment.
+
+    Usage::
+
+        from fastelt import Env, Source
+
+        github = Source(
+            base_url="https://api.github.com",
+            token=Env("GH_TOKEN"),
+            org="anthropics",
+        )
+    """
+
+    __slots__ = ("_var", "_default")
+
+    def __init__(self, var: str, default: str = _UNSET) -> None:  # type: ignore[assignment]
+        self._var = var
+        self._default = default
+
+    def resolve(self) -> str:
+        """Return the current value of the environment variable."""
+        value = os.environ.get(self._var, self._default)
+        if value is _UNSET:
+            raise EnvironmentError(
+                f"Environment variable '{self._var}' is not set and no default was provided"
+            )
+        return value  # type: ignore[return-value]
+
+    def __repr__(self) -> str:
+        if self._default is _UNSET:
+            return f"Env({self._var!r})"
+        return f"Env({self._var!r}, default={self._default!r})"
 
 
 class Records(Generic[T]):
@@ -108,10 +157,15 @@ class Source(BaseModel):
 
     def __new__(cls, **kwargs: Any) -> Source:
         if cls is Source:
+            # Resolve any Env instances to their environment variable values
+            resolved = {
+                k: v.resolve() if isinstance(v, Env) else v
+                for k, v in kwargs.items()
+            }
             # Direct Source(...) call — dynamically create a typed subclass
-            fields = {k: (type(v), v) for k, v in kwargs.items()}
+            fields = {k: (type(v), v) for k, v in resolved.items()}
             dynamic_cls = create_model("Source", __base__=Source, **fields)  # type: ignore[call-overload]
-            return dynamic_cls(**kwargs)
+            return dynamic_cls(**resolved)
         return super().__new__(cls)
 
     def entity(
