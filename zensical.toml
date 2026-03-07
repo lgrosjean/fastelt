@@ -1,0 +1,59 @@
+[project]
+site_name = "FastELT"
+site_description = "A FastAPI-inspired ELT pipeline library"
+site_url = "https://fastelt.dev"
+
+nav = [
+  {"Home" = "index.md"},
+  {"Getting Started" = [
+    {"Why FastELT?" = "getting-started/why-fastelt.md"},
+    {"Installation" = "getting-started/installation.md"},
+    {"Quickstart" = "getting-started/quickstart.md"},
+  ]},
+  {"User Guide" = [
+    {"Extractors" = "guide/extractors.md"},
+    {"Loaders" = "guide/loaders.md"},
+    {"Sources" = "guide/sources.md"},
+    {"Built-in Plugins" = "guide/built-in-plugins.md"},
+    {"CLI" = "guide/cli.md"},
+  ]},
+  {"API Reference" = [
+    {"FastELT" = "api/app.md"},
+    {"Records" = "api/records.md"},
+    {"Source" = "api/source.md"},
+    {"Types" = "api/types.md"},
+  ]},
+]
+
+[project.theme]
+features = [
+  "content.code.copy",
+  "content.code.annotate",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.top",
+  "navigation.path",
+  "search.highlight",
+]
+
+[project.theme.palette]
+primary = "teal"
+accent = "amber"
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.md_in_html]
+
+[project.markdown_extensions.toc]
+permalink = true
+
+[project.markdown_extensions.pymdownx.details]
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true

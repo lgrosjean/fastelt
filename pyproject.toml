@@ -1,0 +1,28 @@
+[project]
+name = "fastelt"
+version = "0.1.0"
+description = "A FastAPI-inspired ELT pipeline library"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+cli = ["typer>=0.9"]
+parquet = ["pyarrow"]
+dev = ["pytest>=7.0"]
+docs = ["zensical"]
+
+[project.scripts]
+fastelt = "fastelt.cli.main:cli_app"
+
+[build-system]
+requires = ["uv_build>=0.7,<1"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
