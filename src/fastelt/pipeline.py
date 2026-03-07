@@ -43,10 +43,17 @@ def run_pipeline(
 def _validated_iterator(
     records: Iterator[BaseModel], record_type: type[BaseModel]
 ) -> Iterator[BaseModel]:
-    """Wrap an iterator to validate each record against the expected type."""
+    """Wrap an iterator to validate/coerce each record against the expected type.
+
+    Like FastAPI's response_model, raw dicts (or any mapping) are automatically
+    parsed into the target Pydantic model.  Already-typed instances pass through.
+    """
     for record in records:
-        if not isinstance(record, record_type):
-            raise TypeError(
-                f"Expected {record_type.__name__}, got {type(record).__name__}"
+        if isinstance(record, record_type):
+            yield record
+        elif isinstance(record, dict):
+            yield record_type.model_validate(record)
+        else:
+            yield record_type.model_validate(
+                record, from_attributes=True
             )
-        yield record

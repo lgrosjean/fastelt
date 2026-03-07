@@ -60,13 +60,12 @@ def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
         if not data:
             break
         for item in data:
-            stars = item.get("stargazers_count", 0)
-            if stars >= min_stars:
-                yield Repository(
-                    name=item["name"],
-                    stars=stars,
-                    language=item.get("language"),
-                )
+            if item.get("stargazers_count", 0) >= min_stars:
+                yield {
+                    "name": item["name"],
+                    "stars": item["stargazers_count"],
+                    "language": item.get("language"),
+                }
         page += 1
 
 
@@ -90,12 +89,12 @@ def pull_requests(
         if not data:
             break
         for item in data:
-            yield PullRequest(
-                repo=repo,
-                title=item["title"],
-                author=item["user"]["login"],
-                state=item["state"],
-            )
+            yield {
+                "repo": repo,
+                "title": item["title"],
+                "author": item["user"]["login"],
+                "state": item["state"],
+            }
         page += 1
 
 
