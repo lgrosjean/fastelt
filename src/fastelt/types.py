@@ -5,11 +5,20 @@ import inspect
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, PrivateAttr, create_model
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class WriteDisposition(str, Enum):
+    """How extracted records should be written to the destination."""
+
+    APPEND = "append"
+    REPLACE = "replace"
+    MERGE = "merge"
 
 _UNSET = object()
 
@@ -98,6 +107,9 @@ class ExtractorRegistration:
     tags: list[str] = field(default_factory=list)
     deprecated: bool = False
     primary_key: str | list[str] | None = None
+    write_disposition: WriteDisposition = WriteDisposition.APPEND
+    incremental_params: dict[str, Any] = field(default_factory=dict)
+    source_name: str | None = None
 
 
 @dataclass
@@ -122,6 +134,7 @@ class _EntityMeta:
     tags: list[str] = field(default_factory=list)
     deprecated: bool = False
     primary_key: str | list[str] | None = None
+    write_disposition: WriteDisposition = WriteDisposition.APPEND
 
 
 class Source(BaseModel):
@@ -154,6 +167,7 @@ class Source(BaseModel):
     """
 
     _entities: dict[str, _EntityMeta] = PrivateAttr(default_factory=dict)
+    _source_name: str | None = PrivateAttr(default=None)
 
     def __new__(cls, **kwargs: Any) -> Source:
         if cls is Source:
@@ -176,6 +190,7 @@ class Source(BaseModel):
         tags: list[str] | None = None,
         deprecated: bool = False,
         primary_key: str | list[str] | None = None,
+        write_disposition: str | WriteDisposition = WriteDisposition.APPEND,
     ) -> Callable[..., Any]:
         """Decorator to register an entity extractor on this source."""
 
@@ -187,6 +202,7 @@ class Source(BaseModel):
                 tags=tags or [],
                 deprecated=deprecated,
                 primary_key=primary_key,
+                write_disposition=WriteDisposition(write_disposition),
             )
             return func
 
@@ -206,6 +222,8 @@ class Source(BaseModel):
                 tags=meta.tags,
                 deprecated=meta.deprecated,
                 primary_key=meta.primary_key,
+                write_disposition=meta.write_disposition,
+                source_name=self._source_name,
             )
         return PluginGroup(extractors=extractors)
 

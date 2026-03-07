@@ -18,7 +18,7 @@ from fastelt.app import FastELT
 
 cli_app = typer.Typer(name="fastelt", help="FastELT CLI")
 
-ExtractorArg = Annotated[str, typer.Argument(help="Extractor name")]
+ExtractorArg = Annotated[str, typer.Argument(help="Extractor, source, or source:entity")]
 LoaderArg = Annotated[str, typer.Argument(help="Loader name")]
 NameArg = Annotated[str, typer.Argument(help="Component name")]
 ExtractorConfigOpt = Annotated[
@@ -150,8 +150,24 @@ def list_components(
     app_path: AppPathOpt = None,
     tag: Annotated[str | None, typer.Option("--tag", "-t", help="Filter by tag")] = None,
 ) -> None:
-    """List registered extractors and loaders."""
+    """List registered extractors, loaders, and sources."""
     app = _discover_app(app_path)
+
+    sources = app.list_sources()
+    if sources:
+        typer.echo("Sources:")
+        for src_name in sources:
+            entities = app.get_source_entities(src_name)
+            typer.echo(f"  - {src_name} ({len(entities)} entities)")
+            for ent in entities:
+                reg = app.get_extractor(ent)
+                suffix = ""
+                if reg.deprecated:
+                    suffix += " (deprecated)"
+                if reg.tags:
+                    suffix += f" [{', '.join(reg.tags)}]"
+                typer.echo(f"      {src_name}:{ent}{suffix}")
+
     typer.echo("Extractors:")
     for name in app.list_extractors():
         reg = app.get_extractor(name)
@@ -162,6 +178,8 @@ def list_components(
             suffix += " (deprecated)"
         if reg.tags:
             suffix += f" [{', '.join(reg.tags)}]"
+        if reg.source_name:
+            suffix += f" (source: {reg.source_name})"
         typer.echo(f"  - {name}{suffix}")
     typer.echo("Loaders:")
     for name in app.list_loaders():
@@ -189,6 +207,13 @@ def describe(
         if reg.primary_key:
             pk = reg.primary_key if isinstance(reg.primary_key, str) else ", ".join(reg.primary_key)
             typer.echo(f"Primary key: {pk}")
+        typer.echo(f"Write disposition: {reg.write_disposition.value}")
+        if reg.source_name:
+            typer.echo(f"Source: {reg.source_name}")
+        if reg.incremental_params:
+            typer.echo("Incremental cursors:")
+            for pname, inc in reg.incremental_params.items():
+                typer.echo(f"  {pname}: cursor_path={inc.cursor_path}, initial={inc.initial_value}")
     elif name in app.list_loaders():
         reg = app.get_loader(name)
         typer.echo(f"Loader: {name}")

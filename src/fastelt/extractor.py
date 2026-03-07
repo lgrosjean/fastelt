@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastelt._utils import build_config_model, get_record_type
-from fastelt.types import ExtractorRegistration
+from fastelt._utils import build_config_model, get_incremental_params, get_record_type
+from fastelt.types import ExtractorRegistration, WriteDisposition
 
 
 def create_extractor_registration(
@@ -14,6 +14,8 @@ def create_extractor_registration(
     tags: list[str] | None = None,
     deprecated: bool = False,
     primary_key: str | list[str] | None = None,
+    write_disposition: str | WriteDisposition = WriteDisposition.APPEND,
+    source_name: str | None = None,
 ) -> ExtractorRegistration:
     """Validate and create an ExtractorRegistration from a decorated function.
 
@@ -22,7 +24,11 @@ def create_extractor_registration(
     - return (batch): def extract(...) -> list[T]      — all records at once
     """
     record_type = get_record_type(func)
-    config_model = build_config_model(func)
+    incremental = get_incremental_params(func)
+
+    # Exclude incremental params from config model (they're injected by pipeline)
+    exclude = set(incremental.keys())
+    config_model = build_config_model(func, exclude=exclude)
 
     return ExtractorRegistration(
         name=name,
@@ -33,4 +39,7 @@ def create_extractor_registration(
         tags=tags or [],
         deprecated=deprecated,
         primary_key=primary_key,
+        write_disposition=WriteDisposition(write_disposition),
+        incremental_params=incremental,
+        source_name=source_name,
     )

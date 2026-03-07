@@ -4,6 +4,7 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, create_model
 
+from fastelt.incremental import Incremental
 from fastelt.types import Records
 
 
@@ -26,6 +27,26 @@ def build_config_model(fn: Any, *, exclude: set[str] | None = None) -> type[Base
         fields[name] = (annotation, default)
 
     return create_model(f"{fn.__name__}_Config", **fields)
+
+
+def get_incremental_params(fn: Any) -> dict[str, Incremental]:
+    """Find parameters typed as ``Incremental[T]`` with an ``Incremental`` default.
+
+    Returns a dict mapping parameter names to their Incremental instances.
+    """
+    hints = inspect.get_annotations(fn, eval_str=True)
+    sig = inspect.signature(fn)
+    result: dict[str, Incremental] = {}
+
+    for name, param in sig.parameters.items():
+        hint = hints.get(name)
+        if hint is None:
+            continue
+        origin = get_origin(hint)
+        if origin is Incremental and isinstance(param.default, Incremental):
+            result[name] = param.default
+
+    return result
 
 
 def get_record_type(fn: Any) -> type[BaseModel]:
