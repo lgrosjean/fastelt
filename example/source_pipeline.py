@@ -3,11 +3,15 @@
 A GitHub source with shared config (base_url, token), exposing
 multiple entities (repositories, pull_requests) that get the
 source injected automatically.
+
+Requires: pip install httpx
+Usage:    GH_TOKEN=ghp_... python example/source_pipeline.py
 """
 
 import json
 from collections.abc import Iterator
 
+import httpx
 from pydantic import BaseModel, Field
 
 from fastelt import Env, FastELT, Records, Source
@@ -16,7 +20,7 @@ from fastelt import Env, FastELT, Records, Source
 
 github = Source(
     base_url="https://api.github.com",
-    token=Env("GH_TOKEN", default="ghp_fake_token"),
+    token=Env("GH_TOKEN"),
     org="anthropics",
 )
 
@@ -27,14 +31,14 @@ github = Source(
 class Repository(BaseModel):
     name: str
     stars: int
-    language: str
+    language: str | None
 
 
 class PullRequest(BaseModel):
     repo: str
     title: str
     author: str
-    status: str
+    state: str
 
 
 # --- Entities: just use `github` from scope, like any Python closure ---
@@ -46,15 +50,24 @@ class PullRequest(BaseModel):
     primary_key="name",
 )
 def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
-    # In real code: requests.get(f"{github.base_url}/orgs/{github.org}/repos", headers=...)
-    fake_data = [
-        Repository(name="claude-code", stars=12000, language="TypeScript"),
-        Repository(name="anthropic-sdk-python", stars=3400, language="Python"),
-        Repository(name="courses", stars=800, language="Jupyter Notebook"),
-    ]
-    for repo in fake_data:
-        if repo.stars >= min_stars:
-            yield repo
+    headers = {"Authorization": f"Bearer {github.token}"}
+    url = f"{github.base_url}/orgs/{github.org}/repos"
+    page = 1
+    while True:
+        resp = httpx.get(url, headers=headers, params={"per_page": 100, "page": page})
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            break
+        for item in data:
+            stars = item.get("stargazers_count", 0)
+            if stars >= min_stars:
+                yield Repository(
+                    name=item["name"],
+                    stars=stars,
+                    language=item.get("language"),
+                )
+        page += 1
 
 
 @github.entity(
@@ -65,18 +78,25 @@ def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
 def pull_requests(
     repo: str = Field(...), state: str = Field(default="open")
 ) -> Iterator[PullRequest]:
-    # In real code: requests.get(f"{github.base_url}/repos/{github.org}/{repo}/pulls", ...)
-    fake_data = [
-        PullRequest(
-            repo=repo, title="Add streaming support", author="alice", status="open"
-        ),
-        PullRequest(
-            repo=repo, title="Fix typo in README", author="bob", status="merged"
-        ),
-    ]
-    for pr in fake_data:
-        if state == "all" or pr.status == state:
-            yield pr
+    headers = {"Authorization": f"Bearer {github.token}"}
+    url = f"{github.base_url}/repos/{github.org}/{repo}/pulls"
+    page = 1
+    while True:
+        resp = httpx.get(
+            url, headers=headers, params={"state": state, "per_page": 100, "page": page}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            break
+        for item in data:
+            yield PullRequest(
+                repo=repo,
+                title=item["title"],
+                author=item["user"]["login"],
+                state=item["state"],
+            )
+        page += 1
 
 
 # --- App ---
@@ -105,11 +125,11 @@ if __name__ == "__main__":
         extractor_config={"min_stars": 1000},
     )
 
-    print("\n=== All pull requests for claude-code ===")
+    print("\n=== Open pull requests for anthropic-sdk-python ===")
     app.run(
         extractor="pull_requests",
         loader="console",
-        extractor_config={"repo": "claude-code", "state": "all"},
+        extractor_config={"repo": "anthropic-sdk-python", "state": "open"},
     )
 
     print("\n=== Dump repos to JSON ===")
