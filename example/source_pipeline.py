@@ -10,13 +10,13 @@ from collections.abc import Iterator
 
 from pydantic import BaseModel, Field
 
-from fastelt import FastELT, Records, Source
+from fastelt import Env, FastELT, Records, Source
 
 # --- Shared source config (no class needed) ---
 
 github = Source(
     base_url="https://api.github.com",
-    token="ghp_fake_token",
+    token=Env("GH_TOKEN", default="ghp_fake_token"),
     org="anthropics",
 )
 
