@@ -11,6 +11,7 @@ import dlt
 from loguru import logger
 
 from fastelt.rest_api import RESTAPISource
+from fastelt.sources.filesystem import GCSFileSystemSource, LocalFileSystemSource
 from fastelt.types import Source
 
 
@@ -41,10 +42,14 @@ class FastELT:
         self._pipeline_name = pipeline_name
         self._default_destination = destination
         self._default_dataset_name = dataset_name
-        self._sources: dict[str, Source | RESTAPISource] = {}
+        self._sources: dict[str, Source | RESTAPISource | LocalFileSystemSource] = {}
         logger.debug("FastELT app '{}' initialized", pipeline_name)
 
-    def include_source(self, source: Source | RESTAPISource, name: str | None = None) -> None:
+    def include_source(
+        self,
+        source: Source | RESTAPISource | LocalFileSystemSource,
+        name: str | None = None,
+    ) -> None:
         """Register a source with its resources.
 
         Parameters
@@ -54,7 +59,7 @@ class FastELT:
         name:
             Optional name override.
         """
-        if isinstance(source, RESTAPISource):
+        if isinstance(source, (RESTAPISource, LocalFileSystemSource)):
             source_name = name or source.name
             self._sources[source_name] = source
         else:
