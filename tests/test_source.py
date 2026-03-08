@@ -252,3 +252,74 @@ def test_annotated_env_with_default():
     dlt_source = src._build_dlt_source()
     records = list(list(dlt_source.resources.values())[0])
     assert records[0]["val"] == "fallback"
+
+
+# -- Plain str param → auto env var resolution --
+
+
+def test_str_param_resolves_from_env(monkeypatch):
+    """Plain `str` param auto-resolves from UPPERCASED env var."""
+    monkeypatch.setenv("GH_TOKEN", "from_env")
+    src = Source(name="test")
+
+    @src.resource()
+    def repos(gh_token: str):
+        yield {"id": 1, "token": gh_token}
+
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["token"] == "from_env"
+
+
+def test_str_param_with_default_uses_env(monkeypatch):
+    """When env var is set, it takes priority over default."""
+    monkeypatch.setenv("API_KEY", "env_value")
+    src = Source(name="test")
+
+    @src.resource()
+    def items(api_key: str = "default_key"):
+        yield {"id": 1, "key": api_key}
+
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["key"] == "env_value"
+
+
+def test_str_param_with_default_falls_back():
+    """When env var is missing, falls back to default value."""
+    src = Source(name="test")
+
+    @src.resource()
+    def items(api_key: str = "fallback"):
+        yield {"id": 1, "key": api_key}
+
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["key"] == "fallback"
+
+
+def test_str_param_no_default_missing_raises():
+    """Plain `str` param without default raises when env var is missing."""
+    src = Source(name="test")
+
+    @src.resource()
+    def items(missing_var: str):
+        yield {"id": 1}
+
+    with pytest.raises(EnvironmentError, match="MISSING_VAR"):
+        dlt_source = src._build_dlt_source()
+        list(list(dlt_source.resources.values())[0])
+
+
+def test_non_str_params_left_alone():
+    """Non-str params (int, incremental, etc.) are NOT resolved from env."""
+    src = Source(name="test")
+
+    @src.resource()
+    def items(limit: int = 10):
+        yield {"id": 1, "limit": limit}
+
+    # Should work without any env var — `int` params are passed through
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["limit"] == 10

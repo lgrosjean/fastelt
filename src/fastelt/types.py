@@ -88,11 +88,18 @@ class Secret(Env):
         return f"Secret({self._var!r})"
 
 
-def _resolve_annotated_params(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Wrap a function to auto-resolve ``Annotated[str, Env(...)]`` parameters.
+def _resolve_env_params(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Auto-resolve environment variables from function parameters.
 
-    Like FastAPI resolves ``Query()``, ``Path()`` etc. from type annotations,
-    this resolves ``Env`` and ``Secret`` annotations before calling the function.
+    Resolution rules (in priority order):
+
+    1. ``Annotated[str, Env("CUSTOM_VAR")]`` → resolve from ``CUSTOM_VAR``
+    2. ``Annotated[str, Secret("CUSTOM_VAR")]`` → resolve from ``CUSTOM_VAR`` (masked)
+    3. ``param_name: str`` → resolve from ``PARAM_NAME`` (uppercased)
+    4. ``param_name: str = "default"`` → resolve from ``PARAM_NAME``, fallback to ``"default"``
+
+    Like FastAPI auto-resolves ``Query()``, ``Path()`` from type hints,
+    fastELT auto-resolves env vars from ``str``-typed parameters.
     """
     try:
         hints = inspect.get_annotations(func, eval_str=True)
@@ -101,22 +108,34 @@ def _resolve_annotated_params(func: Callable[..., Any]) -> Callable[..., Any]:
 
     sig = inspect.signature(func)
 
-    # Find params with Annotated[T, Env(...)] or Annotated[T, Secret(...)]
+    # Collect params to resolve: param_name -> Env instance
     env_params: dict[str, Env] = {}
     for param_name, param in sig.parameters.items():
         hint = hints.get(param_name)
-        if hint is None or get_origin(hint) is not Annotated:
+        if hint is None:
             continue
-        args = get_args(hint)
-        for arg in args[1:]:
-            if isinstance(arg, Env):
-                env_params[param_name] = arg
-                break
+
+        # Priority 1: Annotated[str, Env(...)] or Annotated[str, Secret(...)]
+        if get_origin(hint) is Annotated:
+            args = get_args(hint)
+            for arg in args[1:]:
+                if isinstance(arg, Env):
+                    env_params[param_name] = arg
+                    break
+            continue
+
+        # Priority 2: plain `str` annotation → auto-resolve from UPPERCASED name
+        if hint is str:
+            var_name = param_name.upper()
+            if param.default is not inspect.Parameter.empty:
+                env_params[param_name] = Env(var_name, default=param.default)
+            else:
+                env_params[param_name] = Env(var_name)
 
     if not env_params:
         return func
 
-    # Strip Env-injected params from the visible signature
+    # Strip env-injected params from the visible signature
     remaining_params = [
         p for p in sig.parameters.values() if p.name not in env_params
     ]
@@ -286,8 +305,8 @@ class Source(BaseModel):
             if meta.deprecated:
                 logger.warning("Resource '{}' is deprecated", key)
 
-            # Resolve Annotated[str, Env(...)] params, then bind source
-            bound = _resolve_annotated_params(meta.func)
+            # Resolve env params (str annotations + Annotated), then bind source
+            bound = _resolve_env_params(meta.func)
             bound = self._bind_source(bound)
 
             # Build dlt.resource kwargs
