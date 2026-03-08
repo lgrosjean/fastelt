@@ -2,101 +2,110 @@
 
 This guide walks you through building your first FastELT pipeline.
 
-## 1. Define your data model
+## 1. Create a Source and register a resource
 
-Like FastAPI uses Pydantic models for request/response schemas, FastELT uses them for records:
+Like FastAPI uses `APIRouter` to group endpoints, FastELT uses `Source` to group resources:
 
 ```python
-from pydantic import BaseModel
+import csv
+from fastelt import FastELT, Source
 
-class User(BaseModel):
+local_data = Source(name="local")
+
+@local_data.resource(primary_key="name", write_disposition="replace")
+def users():
+    with open("users.csv") as f:
+        for row in csv.DictReader(f):
+            yield row
+```
+
+Resources are generator functions that `yield` dict records. dlt handles schema inference and loading.
+
+## 2. Create the app and run
+
+```python
+app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
+app.include_source(local_data)
+app.run()
+```
+
+That's it — data flows from your CSV into DuckDB.
+
+## 3. Or use `@app.source` for quick inline sources
+
+For single-resource sources, skip the `Source` object entirely:
+
+```python
+app = FastELT(pipeline_name="demo", destination="duckdb")
+
+@app.source("users", primary_key="id")
+def users():
+    yield {"id": 1, "name": "Alice"}
+    yield {"id": 2, "name": "Bob"}
+
+app.run()
+```
+
+## 4. Add data validation with `response_model`
+
+Like FastAPI's `response_model`, validate each record through a Pydantic model:
+
+```python
+from pydantic import BaseModel, field_validator
+
+class UserModel(BaseModel):
     name: str
     email: str
     age: int
+
+    @field_validator("age")
+    @classmethod
+    def age_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError(f"age must be > 0, got {v}")
+        return v
+
+@local_data.resource(
+    response_model=UserModel,
+    primary_key="name",
+    write_disposition="replace",
+)
+def users():
+    with open("users.csv") as f:
+        for row in csv.DictReader(f):
+            yield row  # pydantic coerces age from str to int
 ```
 
-## 2. Create an app and register an extractor
+## 5. Use environment variables
+
+Inject secrets without hardcoding:
 
 ```python
-from fastelt import FastELT
-from pydantic import Field
-from typing import Iterator
+from fastelt import Env, Source
 
-app = FastELT()
-
-@app.extractor()
-def csv_users(
-    path: str = Field(..., description="Path to CSV file"),
-    delimiter: str = Field(default=","),
-) -> Iterator[User]:
-    import csv
-    with open(path) as f:
-        for row in csv.DictReader(f, delimiter=delimiter):
-            yield User(**row)
-```
-
-Config parameters are inferred from the function signature — just like FastAPI infers query parameters. Use `Field(...)` for required params and `Field(default=...)` for optional ones.
-
-## 3. Register a loader
-
-```python
-from fastelt import Records
-
-@app.loader()
-def json_file(
-    records: Records[User],
-    path: str = Field(..., description="Output path"),
-) -> None:
-    import json
-    with open(path, "w") as f:
-        json.dump([r.model_dump() for r in records], f, indent=2)
-```
-
-The `Records[User]` parameter is optional — declare it only if your loader needs the extracted data. Think of it like FastAPI's `Request` object.
-
-## 4. Run the pipeline
-
-```python
-app.run(
-    extractor="csv_users",
-    loader="json_file",
-    extractor_config={"path": "users.csv"},
-    loader_config={"path": "output.json"},
+github = Source(
+    name="github",
+    base_url="https://api.github.com",
+    token=Env("GH_TOKEN"),
 )
 ```
 
-## 5. Or use the CLI
-
-Create a file called `fastelt_app.py` (or any `.py` file — FastELT auto-discovers it):
+## 6. Or use the CLI
 
 ```bash
-fastelt run csv_users json_file \
-    -e path=users.csv \
-    -l path=output.json
+pip install fastelt[cli]
+
+fastelt run --destination duckdb
+fastelt list
+fastelt describe local:users
 ```
 
-## Using built-in plugins
-
-Skip writing extractors/loaders for common formats:
-
-```python
-from fastelt.extractors.csv import csv_extractor
-from fastelt.loaders.json import json_loader
-
-app = FastELT()
-app.include(csv_extractor(User))
-app.include(json_loader(User))
-
-app.run(
-    extractor="csv",
-    loader="json",
-    extractor_config={"path": "users.csv"},
-    loader_config={"path": "output.json"},
-)
-```
+The CLI auto-discovers your `FastELT` app instance from `fastelt_app.py`, `main.py`, or `app.py`.
 
 ## Next steps
 
-- [Extractors](../guide/extractors.md) — streaming vs batch, metadata, decorator options
-- [Loaders](../guide/loaders.md) — Records injection, loaders without records
-- [Sources](../guide/sources.md) — group extractors with shared config (like APIRouter)
+- [Sources & Resources](../guide/sources.md) — shared config, env vars, source injection
+- [REST API Source](../guide/rest-api.md) — declarative REST API extraction
+- [Filesystem Sources](../guide/filesystem.md) — load files from local disk or GCS
+- [Data Validation](../guide/validation.md) — `response_model`, `frozen`, schema control
+- [CLI](../guide/cli.md) — run pipelines from the command line
