@@ -55,18 +55,7 @@ from typing import Any
 import dlt
 from loguru import logger
 
-from fastelt.types import Env
-
-
-def _resolve_env_values(obj: Any) -> Any:
-    """Recursively resolve Env instances in nested dicts/lists."""
-    if isinstance(obj, Env):
-        return obj.resolve()
-    if isinstance(obj, dict):
-        return {k: _resolve_env_values(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_resolve_env_values(v) for v in obj]
-    return obj
+from fastelt._utils import resolve_env_values
 
 
 @dataclass
@@ -143,9 +132,9 @@ class RESTAPISource:
             "base_url": self.base_url,
         }
         if self.headers:
-            client_config["headers"] = _resolve_env_values(self.headers)
+            client_config["headers"] = resolve_env_values(self.headers)
         if self.auth:
-            client_config["auth"] = _resolve_env_values(self.auth)
+            client_config["auth"] = resolve_env_values(self.auth)
         if self.paginator:
             client_config["paginator"] = self.paginator
 
@@ -157,14 +146,14 @@ class RESTAPISource:
             ]
 
         # Resolve any Env values in resource configs
-        resources_config = _resolve_env_values(resources_config)
+        resources_config = resolve_env_values(resources_config)
 
         config: dict[str, Any] = {
             "client": client_config,
             "resources": resources_config,
         }
         if self.resource_defaults:
-            config["resource_defaults"] = _resolve_env_values(self.resource_defaults)
+            config["resource_defaults"] = resolve_env_values(self.resource_defaults)
 
         logger.debug(
             "Building REST API source '{}' with {} resources",

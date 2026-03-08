@@ -17,30 +17,13 @@ Each "resource" maps to a file glob pattern loaded as a separate table::
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
 
-from fastelt.types import Env
-
-
-def _resolve_env_values(obj: Any) -> Any:
-    """Recursively resolve Env instances in nested dicts/lists."""
-    if isinstance(obj, Env):
-        return obj.resolve()
-    if isinstance(obj, dict):
-        return {k: _resolve_env_values(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_resolve_env_values(v) for v in obj]
-    return obj
-
-
-_FORMAT_READERS = {
-    "csv": "read_csv",
-    "jsonl": "read_jsonl",
-    "parquet": "read_parquet",
-}
+from fastelt._utils import resolve_env_values
 
 
 @dataclass
@@ -131,7 +114,7 @@ class LocalFileSystemSource:
         result = []
         for r in self.resources:
             if isinstance(r, dict):
-                r = _resolve_env_values(r)
+                r = resolve_env_values(r)
                 result.append(FileResource(**r))
             else:
                 result.append(r)
@@ -158,9 +141,11 @@ class LocalFileSystemSource:
 
         file_resources = self._normalize_resources()
         if resource_names:
-            file_resources = [r for r in file_resources if r.name in resource_names]
+            names_set = set(resource_names)
+            file_resources = [r for r in file_resources if r.name in names_set]
 
-        bucket_url = _resolve_env_values(self.bucket_url)
+        bucket_url = resolve_env_values(self.bucket_url)
+        fs_kwargs = self._filesystem_kwargs(bucket_url)
 
         dlt_resources = []
         for res in file_resources:
@@ -171,8 +156,6 @@ class LocalFileSystemSource:
                     f"Supported: {list(readers.keys())}"
                 )
 
-            reader = readers[fmt]
-
             logger.debug(
                 "Building filesystem resource '{}': {} ({})",
                 res.name,
@@ -180,18 +163,18 @@ class LocalFileSystemSource:
                 fmt,
             )
 
-            # Create filesystem source piped through reader
             fs_resource = filesystem(
-                bucket_url=bucket_url,
+                **fs_kwargs,
                 file_glob=res.file_glob,
-            ) | reader()
+            ) | readers[fmt]()
 
             # Apply hints for table name, primary key, write disposition
-            hints: dict[str, Any] = {"table_name": res.name}
+            hints: dict[str, Any] = {
+                "table_name": res.name,
+                "write_disposition": res.write_disposition,
+            }
             if res.primary_key:
                 hints["primary_key"] = res.primary_key
-            if res.write_disposition:
-                hints["write_disposition"] = res.write_disposition
             if res.merge_key:
                 hints["merge_key"] = res.merge_key
 
@@ -204,7 +187,6 @@ class LocalFileSystemSource:
             len(dlt_resources),
         )
 
-        # Return as a list — FastELT.run() passes this to pipeline.run()
         import dlt
 
         @dlt.source(name=self.name)
@@ -212,6 +194,13 @@ class LocalFileSystemSource:
             return dlt_resources
 
         return _make_source()
+
+    def _filesystem_kwargs(self, bucket_url: str) -> dict[str, Any]:
+        """Return kwargs for ``dlt.sources.filesystem.filesystem()``.
+
+        Subclasses override this to inject credentials or other config.
+        """
+        return {"bucket_url": bucket_url}
 
     def list_resources(self) -> list[str]:
         """Return resource names."""
@@ -235,9 +224,9 @@ class GCSFileSystemSource(LocalFileSystemSource):
     bucket_url:
         GCS bucket URL (e.g. ``"gs://my-bucket/prefix"``).
     credentials:
-        GCS credentials — either a path to a service account JSON file,
-        a dict with service account info, or an ``Env`` reference.
-        If not provided, uses Application Default Credentials.
+        GCS credentials — a path to a service account JSON file
+        or an ``Env`` reference.  If not provided, uses Application
+        Default Credentials.
     resources:
         List of resource configs (same as ``LocalFileSystemSource``).
 
@@ -257,92 +246,13 @@ class GCSFileSystemSource(LocalFileSystemSource):
         )
     """
 
-    credentials: Any | None = None
+    credentials: str | None = None
 
-    def _build_dlt_source(
-        self,
-        resource_names: list[str] | None = None,
-    ) -> Any:
-        """Build dlt resources with GCS credentials."""
-        try:
-            from dlt.sources.filesystem import filesystem, read_csv, read_jsonl, read_parquet
-        except ImportError as e:
-            raise ImportError(
-                "dlt filesystem source is required. "
-                "Install with: pip install dlt[filesystem] gcsfs"
-            ) from e
-
-        readers = {
-            "csv": read_csv,
-            "jsonl": read_jsonl,
-            "parquet": read_parquet,
-        }
-
-        file_resources = self._normalize_resources()
-        if resource_names:
-            file_resources = [r for r in file_resources if r.name in resource_names]
-
-        bucket_url = _resolve_env_values(self.bucket_url)
-        credentials = _resolve_env_values(self.credentials)
-
-        dlt_resources = []
-        for res in file_resources:
-            fmt = res.format
-            if fmt not in readers:
-                raise ValueError(
-                    f"Unsupported format '{fmt}' for resource '{res.name}'. "
-                    f"Supported: {list(readers.keys())}"
-                )
-
-            reader = readers[fmt]
-
-            logger.debug(
-                "Building GCS filesystem resource '{}': {} ({})",
-                res.name,
-                res.file_glob,
-                fmt,
-            )
-
-            # Build filesystem kwargs
-            fs_kwargs: dict[str, Any] = {
-                "bucket_url": bucket_url,
-                "file_glob": res.file_glob,
-            }
-
-            # Pass credentials to dlt filesystem if provided
-            # dlt uses fsspec under the hood — credentials flow through config
-            fs_resource = filesystem(**fs_kwargs) | reader()
-
-            # Apply hints
-            hints: dict[str, Any] = {"table_name": res.name}
-            if res.primary_key:
-                hints["primary_key"] = res.primary_key
-            if res.write_disposition:
-                hints["write_disposition"] = res.write_disposition
-            if res.merge_key:
-                hints["merge_key"] = res.merge_key
-
-            fs_resource.apply_hints(**hints)
-            dlt_resources.append(fs_resource)
-
-        logger.debug(
-            "Building GCS filesystem source '{}' with {} resources",
-            self.name,
-            len(dlt_resources),
-        )
-
-        import dlt
-
-        # Inject GCS credentials into dlt config if provided
+    def _filesystem_kwargs(self, bucket_url: str) -> dict[str, Any]:
+        """Inject GCS credentials into the environment before building resources."""
+        credentials = resolve_env_values(self.credentials)
         if credentials:
-            import os
-            if isinstance(credentials, str) and not credentials.startswith("{"):
-                # Path to service account JSON
-                os.environ.setdefault("CREDENTIALS__FILESYSTEM__BUCKET_URL", bucket_url)
-                os.environ.setdefault("CREDENTIALS__FILESYSTEM__CREDENTIALS", credentials)
-
-        @dlt.source(name=self.name)
-        def _make_source() -> Any:
-            return dlt_resources
-
-        return _make_source()
+            os.environ.setdefault(
+                "GOOGLE_APPLICATION_CREDENTIALS", credentials
+            )
+        return {"bucket_url": bucket_url}

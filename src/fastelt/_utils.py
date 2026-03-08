@@ -1,9 +1,28 @@
 """Internal utilities for fastELT."""
 
+from __future__ import annotations
+
 import inspect
 from typing import Any
 
 from pydantic import BaseModel, create_model
+
+
+def resolve_env_values(obj: Any) -> Any:
+    """Recursively resolve :class:`~fastelt.types.Env` instances in nested structures.
+
+    Works on dicts, lists, and scalar values.  Non-Env values are returned as-is.
+    """
+    # Import here to avoid circular import (types.py imports nothing from _utils)
+    from fastelt.types import Env
+
+    if isinstance(obj, Env):
+        return obj.resolve()
+    if isinstance(obj, dict):
+        return {k: resolve_env_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [resolve_env_values(v) for v in obj]
+    return obj
 
 
 def build_config_model(fn: Any, *, exclude: set[str] | None = None) -> type[BaseModel]:

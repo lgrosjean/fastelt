@@ -11,7 +11,6 @@ import dlt
 from loguru import logger
 
 from fastelt.rest_api import RESTAPISource
-from fastelt.sources.filesystem import GCSFileSystemSource, LocalFileSystemSource
 from fastelt.types import Source
 
 
@@ -42,27 +41,21 @@ class FastELT:
         self._pipeline_name = pipeline_name
         self._default_destination = destination
         self._default_dataset_name = dataset_name
-        self._sources: dict[str, Source | RESTAPISource | LocalFileSystemSource] = {}
+        self._sources: dict[str, Any] = {}
         logger.debug("FastELT app '{}' initialized", pipeline_name)
 
-    def include_source(
-        self,
-        source: Source | RESTAPISource | LocalFileSystemSource,
-        name: str | None = None,
-    ) -> None:
+    def include_source(self, source: Any, name: str | None = None) -> None:
         """Register a source with its resources.
 
         Parameters
         ----------
         source:
-            A ``Source`` or ``RESTAPISource`` instance to include.
+            A ``Source``, ``RESTAPISource``, or filesystem source instance.
         name:
             Optional name override.
         """
-        if isinstance(source, (RESTAPISource, LocalFileSystemSource)):
-            source_name = name or source.name
-            self._sources[source_name] = source
-        else:
+        if isinstance(source, Source):
+            # Source uses _source_name for name tracking
             # Try: explicit name > source.name field > _source_name > class name
             source_name = (
                 name
@@ -71,6 +64,10 @@ class FastELT:
                 or type(source).__name__.lower()
             )
             source._source_name = source_name
+            self._sources[source_name] = source
+        else:
+            # Dataclass-based sources (RESTAPISource, LocalFileSystemSource, etc.)
+            source_name = name or source.name
             self._sources[source_name] = source
         logger.info(
             "Included source '{}' ({} resources)",
@@ -129,7 +126,7 @@ class FastELT:
                 raise KeyError(f"Source '{source}' not registered")
             sources_to_run = {source: self._sources[source]}
         else:
-            sources_to_run = dict(self._sources)
+            sources_to_run = self._sources
 
         if not sources_to_run:
             raise ValueError("No sources registered. Use app.include_source() first.")
@@ -172,7 +169,7 @@ class FastELT:
             name: src.list_resources() for name, src in self._sources.items()
         }
 
-    def get_source(self, name: str) -> Source:
+    def get_source(self, name: str) -> Any:
         """Get a registered source by name."""
         if name not in self._sources:
             raise KeyError(f"Source '{name}' not registered")
