@@ -49,17 +49,16 @@ Usage::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import dlt
 from loguru import logger
 
 from fastelt._utils import resolve_env_values
+from fastelt.types import Source
 
 
-@dataclass
-class RESTAPISource:
+class RESTAPISource(Source):
     """Declarative REST API source wrapping ``dlt.sources.rest_api``.
 
     Maps directly to dlt's ``rest_api_source`` config, with fastELT's ``Env``
@@ -109,7 +108,7 @@ class RESTAPISource:
     name: str
     base_url: str
     resources: list[dict[str, Any]]
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = {}
     auth: dict[str, Any] | str | Any | None = None
     paginator: dict[str, Any] | str | None = None
     resource_defaults: dict[str, Any] | None = None

@@ -18,7 +18,7 @@ from typing import Any
 
 import dlt
 from loguru import logger
-from pydantic import BaseModel, PrivateAttr, create_model
+from pydantic import BaseModel, ConfigDict, PrivateAttr, create_model
 
 _UNSET = object()
 
@@ -107,6 +107,8 @@ class Source(BaseModel):
         app.include_source(github)
         app.run(destination="duckdb")
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     _resources: dict[str, _ResourceMeta] = PrivateAttr(default_factory=dict)
     _source_name: str | None = PrivateAttr(default=None)

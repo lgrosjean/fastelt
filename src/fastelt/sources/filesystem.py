@@ -18,12 +18,13 @@ Each "resource" maps to a file glob pattern loaded as a separate table::
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
 
 from fastelt._utils import resolve_env_values
+from fastelt.types import Source
 
 
 @dataclass
@@ -74,8 +75,7 @@ def _infer_format(file_glob: str) -> str:
     )
 
 
-@dataclass
-class LocalFileSystemSource:
+class LocalFileSystemSource(Source):
     """Load files from local filesystem into dlt destinations.
 
     Wraps ``dlt.sources.filesystem`` with multi-resource support.
@@ -107,7 +107,7 @@ class LocalFileSystemSource:
 
     name: str
     bucket_url: str
-    resources: list[FileResource | dict[str, Any]] = field(default_factory=list)
+    resources: list[FileResource | dict[str, Any]] = []
 
     def _normalize_resources(self) -> list[FileResource]:
         """Convert dict resources to FileResource objects."""
@@ -210,7 +210,6 @@ class LocalFileSystemSource:
         ]
 
 
-@dataclass
 class GCSFileSystemSource(LocalFileSystemSource):
     """Load files from Google Cloud Storage into dlt destinations.
 
