@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-from typing import Iterator
+from typing import Annotated, Iterator
 
 import pytest
 
-from fastelt import Env, Source
+from fastelt import Env, Secret, Source
 
 
 class GitHubSource(Source):
@@ -163,3 +163,92 @@ def test_source_closure_access():
 
     records = list(repos())
     assert records[0]["org"] == "closure_org"
+
+
+# -- Secret type --
+
+
+def test_secret_resolves_env(monkeypatch):
+    """Secret resolves like Env."""
+    monkeypatch.setenv("MY_SECRET", "s3cret")
+    s = Secret("MY_SECRET")
+    assert s.resolve() == "s3cret"
+
+
+def test_secret_masked_repr():
+    """Secret repr does not show default value."""
+    s = Secret("API_KEY", default="fallback")
+    assert repr(s) == "Secret('API_KEY')"
+    assert "fallback" not in repr(s)
+
+
+def test_secret_is_env():
+    """Secret is a subclass of Env."""
+    assert issubclass(Secret, Env)
+    s = Secret("X")
+    assert isinstance(s, Env)
+
+
+def test_secret_in_source(monkeypatch):
+    """Secret works as a Source field value."""
+    monkeypatch.setenv("TOKEN", "abc123")
+    src = Source(name="test", token=Secret("TOKEN"))
+    assert src.token == "abc123"
+
+
+# -- Annotated[str, Env(...)] parameter injection --
+
+
+def test_annotated_env_in_resource(monkeypatch):
+    """Annotated[str, Env(...)] is resolved in resource functions."""
+    monkeypatch.setenv("API_TOKEN", "resolved_token")
+    src = Source(name="test")
+
+    @src.resource()
+    def items(token: Annotated[str, Env("API_TOKEN")]):
+        yield {"id": 1, "token": token}
+
+    # Build and extract the dlt source to trigger resolution
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["token"] == "resolved_token"
+
+
+def test_annotated_secret_in_resource(monkeypatch):
+    """Annotated[str, Secret(...)] is resolved in resource functions."""
+    monkeypatch.setenv("DB_PASS", "hunter2")
+    src = Source(name="test")
+
+    @src.resource()
+    def items(password: Annotated[str, Secret("DB_PASS")]):
+        yield {"id": 1, "pw": password}
+
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["pw"] == "hunter2"
+
+
+def test_annotated_env_missing_raises():
+    """Missing env var in Annotated raises EnvironmentError at resource build time."""
+    src = Source(name="test")
+
+    @src.resource()
+    def items(token: Annotated[str, Env("DEFINITELY_NOT_SET_12345")]):
+        yield {"id": 1}
+
+    with pytest.raises(EnvironmentError, match="DEFINITELY_NOT_SET_12345"):
+        dlt_source = src._build_dlt_source()
+        list(list(dlt_source.resources.values())[0])
+
+
+def test_annotated_env_with_default():
+    """Annotated[str, Env("X", default="y")] uses default."""
+    src = Source(name="test")
+
+    @src.resource()
+    def items(val: Annotated[str, Env("NOPE_NOT_SET", default="fallback")]):
+        yield {"id": 1, "val": val}
+
+    dlt_source = src._build_dlt_source()
+    records = list(list(dlt_source.resources.values())[0])
+    assert records[0]["val"] == "fallback"

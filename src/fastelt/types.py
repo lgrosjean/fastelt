@@ -4,7 +4,8 @@ Like FastAPI wraps Starlette, fastELT wraps dlt with a decorator-driven DX:
 
 - ``Source``     → config container that produces ``dlt.source`` objects
 - ``resource()`` → decorator that creates ``dlt.resource`` entries
-- ``Env``        → lazy environment variable resolution
+- ``Env``        → lazy environment variable resolution (like FastAPI's ``Query``)
+- ``Secret``     → like ``Env`` but masked in logs/repr
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import inspect
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any, get_args, get_origin
 
 import dlt
 from loguru import logger
@@ -26,18 +27,22 @@ _UNSET = object()
 class Env:
     """Lazy reference to an environment variable.
 
-    Resolves the value when ``resolve()`` is called (typically at Source
-    construction time), not at import time.
+    Can be used as a value or as a type annotation with ``Annotated``.
 
     Usage::
 
         from fastelt import Env, Source
 
+        # As a value (resolved at Source construction):
         github = Source(
             name="github",
-            base_url="https://api.github.com",
             token=Env("GH_TOKEN"),
         )
+
+        # As an Annotated type hint (resolved at resource call time):
+        @source.resource()
+        def repos(token: Annotated[str, Env("GH_TOKEN")]):
+            ...
     """
 
     __slots__ = ("_var", "_default")
@@ -59,6 +64,75 @@ class Env:
         if self._default is _UNSET:
             return f"Env({self._var!r})"
         return f"Env({self._var!r}, default={self._default!r})"
+
+
+class Secret(Env):
+    """Like ``Env`` but masks the value in logs and repr.
+
+    Use for sensitive values (API keys, tokens, passwords).
+
+    Usage::
+
+        from fastelt import Secret, Source
+
+        # As a value:
+        github = Source(name="github", token=Secret("GH_TOKEN"))
+
+        # As an Annotated type hint:
+        @source.resource()
+        def repos(token: Annotated[str, Secret("GH_TOKEN")]):
+            ...
+    """
+
+    def __repr__(self) -> str:
+        return f"Secret({self._var!r})"
+
+
+def _resolve_annotated_params(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a function to auto-resolve ``Annotated[str, Env(...)]`` parameters.
+
+    Like FastAPI resolves ``Query()``, ``Path()`` etc. from type annotations,
+    this resolves ``Env`` and ``Secret`` annotations before calling the function.
+    """
+    try:
+        hints = inspect.get_annotations(func, eval_str=True)
+    except NameError:
+        hints = inspect.get_annotations(func, eval_str=False)
+
+    sig = inspect.signature(func)
+
+    # Find params with Annotated[T, Env(...)] or Annotated[T, Secret(...)]
+    env_params: dict[str, Env] = {}
+    for param_name, param in sig.parameters.items():
+        hint = hints.get(param_name)
+        if hint is None or get_origin(hint) is not Annotated:
+            continue
+        args = get_args(hint)
+        for arg in args[1:]:
+            if isinstance(arg, Env):
+                env_params[param_name] = arg
+                break
+
+    if not env_params:
+        return func
+
+    # Strip Env-injected params from the visible signature
+    remaining_params = [
+        p for p in sig.parameters.values() if p.name not in env_params
+    ]
+
+    @functools.wraps(func)
+    def wrapper(**kwargs: Any) -> Any:
+        for param_name, env in env_params.items():
+            if param_name not in kwargs:
+                kwargs[param_name] = env.resolve()
+        return func(**kwargs)
+
+    wrapper.__signature__ = sig.replace(parameters=remaining_params)  # type: ignore[attr-defined]
+    wrapper.__annotations__ = {
+        k: v for k, v in hints.items() if k not in env_params
+    }
+    return wrapper
 
 
 @dataclass
@@ -212,8 +286,9 @@ class Source(BaseModel):
             if meta.deprecated:
                 logger.warning("Resource '{}' is deprecated", key)
 
-            # Bind source to function if it declares a source param
-            bound = self._bind_source(meta.func)
+            # Resolve Annotated[str, Env(...)] params, then bind source
+            bound = _resolve_annotated_params(meta.func)
+            bound = self._bind_source(bound)
 
             # Build dlt.resource kwargs
             res_kwargs: dict[str, Any] = {

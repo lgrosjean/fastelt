@@ -7,11 +7,12 @@ schema evolution, merge strategies) with FastAPI's developer experience.
 
 from fastelt.app import FastELT
 from fastelt.rest_api import RESTAPISource
-from fastelt.types import Env, Source
+from fastelt.types import Env, Secret, Source
 
 __all__ = [
     "Env",
     "FastELT",
     "RESTAPISource",
+    "Secret",
     "Source",
 ]

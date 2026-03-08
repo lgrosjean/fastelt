@@ -5,6 +5,7 @@ Like ``FastAPI()`` wraps Starlette, ``FastELT()`` wraps ``dlt.pipeline()``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import dlt
@@ -16,18 +17,24 @@ from fastelt.types import Source
 class FastELT:
     """Central application object — like ``FastAPI()`` but for ELT pipelines.
 
-    Usage::
+    Two registration styles (like FastAPI)::
 
-        app = FastELT(pipeline_name="my_pipeline")
+        app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
 
-        github = Source(name="github", base_url="...", token=Env("GH_TOKEN"))
+        # Style 1: @app.source — quick inline (like @app.get)
+        @app.source("github", primary_key="id")
+        def repos():
+            yield from fetch_repos()
+
+        # Style 2: include_source — composable (like app.include_router)
+        github = Source(name="github", token=Env("GH_TOKEN"))
 
         @github.resource(primary_key="id", write_disposition="merge")
         def repositories():
             yield from fetch_repos()
 
         app.include_source(github)
-        app.run(destination="duckdb", dataset_name="raw_data")
+        app.run()
     """
 
     def __init__(
@@ -42,6 +49,61 @@ class FastELT:
         self._default_dataset_name = dataset_name
         self._sources: dict[str, Source] = {}
         logger.debug("FastELT app '{}' initialized", pipeline_name)
+
+    def source(
+        self,
+        name: str | None = None,
+        *,
+        primary_key: str | list[str] | None = None,
+        write_disposition: str = "append",
+        merge_key: str | list[str] | None = None,
+        table_name: str | None = None,
+    ) -> Callable[..., Any]:
+        """Register a resource as its own source — like ``@app.get`` in FastAPI.
+
+        Quick way to add a single-resource source without creating a ``Source``
+        object first.  For multi-resource sources, use ``Source`` +
+        ``@source.resource()`` + ``app.include_source()``.
+
+        Usage::
+
+            app = FastELT(pipeline_name="demo", destination="duckdb")
+
+            @app.source("users", primary_key="id", write_disposition="merge")
+            def users():
+                yield {"id": 1, "name": "Alice"}
+                yield {"id": 2, "name": "Bob"}
+
+            app.run()
+
+        Parameters
+        ----------
+        name:
+            Source and resource name.  Defaults to function name.
+        primary_key:
+            Column(s) used as primary key.
+        write_disposition:
+            How data is written: ``"append"``, ``"replace"``, or ``"merge"``.
+        merge_key:
+            Column(s) used to match records for merge.
+        table_name:
+            Destination table name.  Defaults to resource name.
+        """
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            source_name = name or func.__name__
+            src = Source()
+            src.resource(
+                name=source_name,
+                primary_key=primary_key,
+                write_disposition=write_disposition,
+                merge_key=merge_key,
+                table_name=table_name,
+            )(func)
+            self.include_source(src, name=source_name)
+            return func
+
+        return decorator
 
     def include_source(self, source: Source, name: str | None = None) -> None:
         """Register a source with its resources.

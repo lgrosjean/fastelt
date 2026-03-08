@@ -364,3 +364,48 @@ def test_destination_override_at_run():
     app.run(destination="duckdb")
     rows = _query("p_override", "SELECT id FROM p_override_data.items")
     assert len(rows) == 1
+
+
+# -- @app.source() decorator --
+
+
+def test_app_source_decorator():
+    """@app.source() registers a single-resource source."""
+    app = _app("p_app_src")
+
+    @app.source("users", primary_key="id")
+    def users():
+        yield {"id": 1, "name": "Alice"}
+        yield {"id": 2, "name": "Bob"}
+
+    assert "users" in app.list_sources()
+    app.run()
+
+    rows = _query("p_app_src", "SELECT name FROM p_app_src_data.users ORDER BY id")
+    assert [r[0] for r in rows] == ["Alice", "Bob"]
+
+
+def test_app_source_decorator_default_name():
+    """@app.source() uses function name when no name given."""
+    app = _app("p_app_name")
+
+    @app.source()
+    def events():
+        yield {"id": 1, "type": "click"}
+
+    assert "events" in app.list_sources()
+
+
+def test_app_source_decorator_write_disposition():
+    """@app.source() passes write_disposition to dlt."""
+    app = _app("p_app_wd")
+
+    @app.source("items", write_disposition="replace")
+    def items():
+        yield {"id": 1, "val": "a"}
+
+    app.run()
+    app.run()  # second run should replace, not append
+
+    rows = _query("p_app_wd", "SELECT COUNT(*) FROM p_app_wd_data.items")
+    assert rows[0][0] == 1
