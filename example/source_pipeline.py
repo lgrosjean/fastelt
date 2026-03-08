@@ -1,140 +1,102 @@
-"""Example: Source-based pipeline — like FastAPI's APIRouter.
+"""Example: Source-based pipeline — like FastAPI's APIRouter wrapping dlt.
 
 A GitHub source with shared config (base_url, token), exposing
-multiple entities (repositories, pull_requests) that get the
-source injected automatically.
+multiple resources that get auto-loaded into DuckDB via dlt.
 
 Requires: pip install httpx
 Usage:    GH_TOKEN=ghp_... python example/source_pipeline.py
 """
 
-import json
 from collections.abc import Iterator
 
+import dlt
 import httpx
-from pydantic import BaseModel, Field
 
-from fastelt import Env, FastELT, Records, Source
+from fastelt import Env, FastELT, Source
 
 # --- Shared source config (no class needed) ---
 
 github = Source(
+    name="github",
     base_url="https://api.github.com",
     token=Env("GH_TOKEN"),
     org="anthropics",
 )
 
 
-# --- Record schemas ---
+# --- Resources: just use `github` from scope, like any Python closure ---
 
 
-class Repository(BaseModel):
-    name: str
-    stars: int
-    language: str | None
-
-
-class PullRequest(BaseModel):
-    repo: str
-    title: str
-    author: str
-    state: str
-
-
-# --- Entities: just use `github` from scope, like any Python closure ---
-
-
-@github.entity(
+@github.resource(
     description="Fetch repositories from a GitHub org",
     tags=["core", "github"],
-    primary_key="name",
+    primary_key="id",
+    write_disposition="merge",
 )
-def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
+def repositories(
+    updated_at=dlt.sources.incremental("updated_at", initial_value="2020-01-01"),
+    min_stars: int = 0,
+) -> Iterator[dict]:
     headers = {"Authorization": f"Bearer {github.token}"}
     url = f"{github.base_url}/orgs/{github.org}/repos"
     page = 1
     while True:
-        resp = httpx.get(url, headers=headers, params={"per_page": 100, "page": page})
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            break
-        for item in data:
-            if item.get("stargazers_count", 0) >= min_stars:
-                yield {
-                    "name": item["name"],
-                    "stars": item["stargazers_count"],
-                    "language": item.get("language"),
-                }
-        page += 1
-
-
-@github.entity(
-    description="Fetch pull requests for a repository",
-    tags=["core", "github"],
-    primary_key=["repo", "title"],
-)
-def pull_requests(
-    repo: str = Field(...), state: str = Field(default="open")
-) -> Iterator[PullRequest]:
-    headers = {"Authorization": f"Bearer {github.token}"}
-    url = f"{github.base_url}/repos/{github.org}/{repo}/pulls"
-    page = 1
-    while True:
         resp = httpx.get(
-            url, headers=headers, params={"state": state, "per_page": 100, "page": page}
+            url,
+            headers=headers,
+            params={"per_page": 100, "page": page, "sort": "updated"},
         )
         resp.raise_for_status()
         data = resp.json()
         if not data:
             break
         for item in data:
-            yield {
-                "repo": repo,
-                "title": item["title"],
-                "author": item["user"]["login"],
-                "state": item["state"],
-            }
+            if item.get("stargazers_count", 0) >= min_stars:
+                yield item
         page += 1
 
 
-# --- App ---
+@github.resource(
+    description="Fetch pull requests for a repository",
+    tags=["core", "github"],
+    primary_key="id",
+    write_disposition="append",
+)
+def pull_requests(
+    repo: str = "anthropic-sdk-python",
+    state: str = "open",
+) -> Iterator[dict]:
+    headers = {"Authorization": f"Bearer {github.token}"}
+    url = f"{github.base_url}/repos/{github.org}/{repo}/pulls"
+    page = 1
+    while True:
+        resp = httpx.get(
+            url,
+            headers=headers,
+            params={"state": state, "per_page": 100, "page": page},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            break
+        yield from data
+        page += 1
 
-app = FastELT()
+
+# --- App: wire source to dlt pipeline ---
+
+app = FastELT(
+    pipeline_name="github_pipeline",
+    destination="duckdb",
+    dataset_name="raw_github",
+)
 app.include_source(github)
 
 
-@app.loader()
-def json_file(records: Records[BaseModel], path: str = Field(...)) -> None:
-    with open(path, "w") as f:
-        json.dump([r.model_dump() for r in records], f, indent=2)
-
-
-@app.loader()
-def console(records: Records[BaseModel]) -> None:
-    for r in records:
-        print(f"  {r.model_dump()}")
-
-
 if __name__ == "__main__":
-    print("=== Repositories (min 1000 stars) ===")
-    app.run(
-        extractor="repositories",
-        loader="console",
-        extractor_config={"min_stars": 1000},
-    )
+    # Run all resources to DuckDB
+    info = app.run()
+    print(f"Pipeline completed: {info}")
 
-    print("\n=== Open pull requests for anthropic-sdk-python ===")
-    app.run(
-        extractor="pull_requests",
-        loader="console",
-        extractor_config={"repo": "anthropic-sdk-python", "state": "open"},
-    )
-
-    print("\n=== Dump repos to JSON ===")
-    app.run(
-        extractor="repositories",
-        loader="json_file",
-        loader_config={"path": "example/repos.json"},
-    )
-    print("Written to example/repos.json")
+    # Or run just one resource:
+    # info = app.run(resources=["repositories"])

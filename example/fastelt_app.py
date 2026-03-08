@@ -1,26 +1,30 @@
-from pydantic import BaseModel
+"""Example: Simple fastELT app — CSV data into DuckDB via dlt.
 
-from fastelt import FastELT
-from fastelt.extractors.csv import csv_extractor
-from fastelt.loaders.parquet import parquet_loader
+Usage:  python example/fastelt_app.py
+"""
 
+import csv
 
-class User(BaseModel):
-    name: str
-    email: str
-    age: int
-    city: str
+from fastelt import FastELT, Source
 
 
-app = FastELT()
-app.include(csv_extractor(User))
-app.include(parquet_loader(User))
+# Source for local file data
+local_data = Source(name="local")
+
+
+@local_data.resource(primary_key="name", write_disposition="replace")
+def users():
+    """Extract users from a CSV file."""
+    with open("example/users.csv") as f:
+        for row in csv.DictReader(f):
+            yield row
+
+
+# Wire up
+app = FastELT(pipeline_name="local_pipeline", destination="duckdb")
+app.include_source(local_data)
 
 if __name__ == "__main__":
-    app.run(
-        extractor="csv",
-        loader="parquet",
-        extractor_config={"path": "example/users.csv"},
-        loader_config={"path": "example/users.parquet"},
-    )
-    print("Done! Written to example/users.parquet")
+    info = app.run()
+    print(f"Done! {info}")
+    print("Data loaded into local_pipeline.duckdb")

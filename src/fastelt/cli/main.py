@@ -16,22 +16,27 @@ from loguru import logger
 
 from fastelt.app import FastELT
 
-cli_app = typer.Typer(name="fastelt", help="FastELT CLI")
+cli_app = typer.Typer(name="fastelt", help="FastELT CLI — run dlt pipelines with FastAPI-style DX")
 
-ExtractorArg = Annotated[str, typer.Argument(help="Extractor, source, or source:entity")]
-LoaderArg = Annotated[str, typer.Argument(help="Loader name")]
-NameArg = Annotated[str, typer.Argument(help="Component name")]
-ExtractorConfigOpt = Annotated[
-    list[str] | None,
-    typer.Option("--extractor-config", "-e", help="Extractor config as KEY=VALUE"),
-]
-LoaderConfigOpt = Annotated[
-    list[str] | None,
-    typer.Option("--loader-config", "-l", help="Loader config as KEY=VALUE"),
-]
 AppPathOpt = Annotated[
     str | None,
     typer.Option("--app", help="App import path (module:attr)"),
+]
+DestinationOpt = Annotated[
+    str | None,
+    typer.Option("--destination", "-d", help="dlt destination (duckdb, postgres, bigquery, ...)"),
+]
+DatasetOpt = Annotated[
+    str | None,
+    typer.Option("--dataset", help="Dataset/schema name at the destination"),
+]
+SourceOpt = Annotated[
+    str | None,
+    typer.Option("--source", "-s", help="Run only this source"),
+]
+ResourcesOpt = Annotated[
+    list[str] | None,
+    typer.Option("--resource", "-r", help="Run only these resources (repeatable)"),
 ]
 
 
@@ -111,127 +116,82 @@ def _discover_app(app_path: str | None = None) -> FastELT:
     return app
 
 
-def _parse_config(values: list[str] | None) -> dict[str, str]:
-    """Parse KEY=VAL config pairs."""
-    if not values:
-        return {}
-    config: dict[str, str] = {}
-    for item in values:
-        key, _, val = item.partition("=")
-        if not _:
-            raise typer.BadParameter(f"Config must be KEY=VALUE, got: {item}")
-        config[key] = val
-    return config
-
-
 @cli_app.command()
 def run(
-    extractor: ExtractorArg,
-    loader: LoaderArg,
-    extractor_config: ExtractorConfigOpt = None,
-    loader_config: LoaderConfigOpt = None,
     app_path: AppPathOpt = None,
+    destination: DestinationOpt = None,
+    dataset: DatasetOpt = None,
+    source: SourceOpt = None,
+    resources: ResourcesOpt = None,
 ) -> None:
-    """Run a pipeline from extractor to loader."""
+    """Run the pipeline — extract from sources, load to destination."""
     app = _discover_app(app_path)
-    ext_conf = _parse_config(extractor_config)
-    ldr_conf = _parse_config(loader_config)
-    app.run(
-        extractor=extractor,
-        loader=loader,
-        extractor_config=ext_conf,
-        loader_config=ldr_conf,
-    )
+
+    kwargs: dict = {}
+    if destination:
+        kwargs["destination"] = destination
+    if dataset:
+        kwargs["dataset_name"] = dataset
+    if source:
+        kwargs["source"] = source
+    if resources:
+        kwargs["resources"] = resources
+
+    app.run(**kwargs)
     typer.echo("Pipeline completed successfully.")
 
 
 @cli_app.command("list")
 def list_components(
     app_path: AppPathOpt = None,
-    tag: Annotated[str | None, typer.Option("--tag", "-t", help="Filter by tag")] = None,
 ) -> None:
-    """List registered extractors, loaders, and sources."""
+    """List registered sources and their resources."""
     app = _discover_app(app_path)
 
     sources = app.list_sources()
-    if sources:
-        typer.echo("Sources:")
-        for src_name in sources:
-            entities = app.get_source_entities(src_name)
-            typer.echo(f"  - {src_name} ({len(entities)} entities)")
-            for ent in entities:
-                reg = app.get_extractor(ent)
-                suffix = ""
-                if reg.deprecated:
-                    suffix += " (deprecated)"
-                if reg.tags:
-                    suffix += f" [{', '.join(reg.tags)}]"
-                typer.echo(f"      {src_name}:{ent}{suffix}")
+    if not sources:
+        typer.echo("No sources registered.")
+        return
 
-    typer.echo("Extractors:")
-    for name in app.list_extractors():
-        reg = app.get_extractor(name)
-        if tag and tag not in reg.tags:
-            continue
-        suffix = ""
-        if reg.deprecated:
-            suffix += " (deprecated)"
-        if reg.tags:
-            suffix += f" [{', '.join(reg.tags)}]"
-        if reg.source_name:
-            suffix += f" (source: {reg.source_name})"
-        typer.echo(f"  - {name}{suffix}")
-    typer.echo("Loaders:")
-    for name in app.list_loaders():
-        typer.echo(f"  - {name}")
+    all_resources = app.list_resources()
+    for src_name in sources:
+        res_names = all_resources.get(src_name, [])
+        typer.echo(f"Source: {src_name} ({len(res_names)} resources)")
+        for res_name in res_names:
+            typer.echo(f"  - {res_name}")
 
 
 @cli_app.command()
 def describe(
-    name: NameArg,
+    name: Annotated[str, typer.Argument(help="Source or source:resource name")],
     app_path: AppPathOpt = None,
 ) -> None:
-    """Describe a component's config schema."""
+    """Describe a source or resource."""
     app = _discover_app(app_path)
 
-    if name in app.list_extractors():
-        reg = app.get_extractor(name)
-        typer.echo(f"Extractor: {name}")
-        if reg.description:
-            typer.echo(f"Description: {reg.description}")
-        if reg.deprecated:
-            typer.echo("Status: DEPRECATED")
-        if reg.tags:
-            typer.echo(f"Tags: {', '.join(reg.tags)}")
-        typer.echo(f"Record type: {reg.record_type.__name__}")
-        if reg.primary_key:
-            pk = reg.primary_key if isinstance(reg.primary_key, str) else ", ".join(reg.primary_key)
-            typer.echo(f"Primary key: {pk}")
-        typer.echo(f"Write disposition: {reg.write_disposition.value}")
-        if reg.source_name:
-            typer.echo(f"Source: {reg.source_name}")
-        if reg.incremental_params:
-            typer.echo("Incremental cursors:")
-            for pname, inc in reg.incremental_params.items():
-                typer.echo(f"  {pname}: cursor_path={inc.cursor_path}, initial={inc.initial_value}")
-    elif name in app.list_loaders():
-        reg = app.get_loader(name)
-        typer.echo(f"Loader: {name}")
-        record_name = reg.record_type.__name__ if reg.record_type else "any"
-        typer.echo(f"Record type: {record_name}")
+    if ":" in name:
+        # source:resource
+        src_name, res_name = name.split(":", 1)
+        src = app.get_source(src_name)
+        meta = src.get_resource_meta(res_name)
+        typer.echo(f"Resource: {src_name}:{res_name}")
+        if meta.description:
+            typer.echo(f"  Description: {meta.description}")
+        if meta.deprecated:
+            typer.echo("  Status: DEPRECATED")
+        if meta.tags:
+            typer.echo(f"  Tags: {', '.join(meta.tags)}")
+        typer.echo(f"  Write disposition: {meta.write_disposition}")
+        if meta.primary_key:
+            pk = meta.primary_key if isinstance(meta.primary_key, str) else ", ".join(meta.primary_key)
+            typer.echo(f"  Primary key: {pk}")
+        if meta.merge_key:
+            mk = meta.merge_key if isinstance(meta.merge_key, str) else ", ".join(meta.merge_key)
+            typer.echo(f"  Merge key: {mk}")
+    elif name in app.list_sources():
+        src = app.get_source(name)
+        typer.echo(f"Source: {name}")
+        typer.echo(f"  Resources: {', '.join(src.list_resources())}")
     else:
-        typer.echo(f"Component '{name}' not found.")
+        typer.echo(f"'{name}' not found. Use 'fastelt list' to see available sources.")
         raise typer.Exit(1)
-
-    typer.echo("Config schema:")
-    schema = reg.config_model.model_json_schema()
-    props = schema.get("properties", {})
-    required = set(schema.get("required", []))
-    for field_name, field_info in props.items():
-        req = " (required)" if field_name in required else ""
-        ftype = field_info.get("type", "any")
-        desc = field_info.get("description", "")
-        line = f"  {field_name}: {ftype}{req}"
-        if desc:
-            line += f" - {desc}"
-        typer.echo(line)

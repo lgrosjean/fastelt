@@ -1,24 +1,24 @@
+"""Core types for fastELT — a FastAPI-inspired wrapper around dlt.
+
+Like FastAPI wraps Starlette, fastELT wraps dlt with a decorator-driven DX:
+
+- ``Source``     → config container that produces ``dlt.source`` objects
+- ``resource()`` → decorator that creates ``dlt.resource`` entries
+- ``Env``        → lazy environment variable resolution
+"""
+
 from __future__ import annotations
 
 import functools
 import inspect
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any
 
+import dlt
+from loguru import logger
 from pydantic import BaseModel, PrivateAttr, create_model
-
-T = TypeVar("T", bound=BaseModel)
-
-
-class WriteDisposition(str, Enum):
-    """How extracted records should be written to the destination."""
-
-    APPEND = "append"
-    REPLACE = "replace"
-    MERGE = "merge"
 
 _UNSET = object()
 
@@ -27,24 +27,16 @@ class Env:
     """Lazy reference to an environment variable.
 
     Resolves the value when ``resolve()`` is called (typically at Source
-    construction time), not at import time.  This gives three advantages
-    over a bare ``os.getenv``:
-
-    * **Lazy** — the var is read when the Source is used, not when the
-      module is imported.
-    * **Fail-fast** — raises immediately with a clear message if the var
-      is missing and no *default* was provided.
-    * **Declarative** — the Source definition shows *which* values come
-      from the environment.
+    construction time), not at import time.
 
     Usage::
 
         from fastelt import Env, Source
 
         github = Source(
+            name="github",
             base_url="https://api.github.com",
             token=Env("GH_TOKEN"),
-            org="anthropics",
         )
     """
 
@@ -69,105 +61,63 @@ class Env:
         return f"Env({self._var!r}, default={self._default!r})"
 
 
-class Records(Generic[T]):
-    """Injectable container for extracted records.
-
-    Like FastAPI's Request object — declare it in your loader signature
-    only if you need access to the extracted data.
-
-    Usage:
-        @app.loader("my_loader")
-        def load(records: Records[User], path: str = Field(...)) -> None:
-            for record in records:
-                ...
-    """
-
-    def __init__(self, data: Iterator[T]) -> None:
-        self._data = data
-        self._consumed = False
-
-    def __iter__(self) -> Iterator[T]:
-        if self._consumed:
-            raise RuntimeError("Records have already been consumed")
-        self._consumed = True
-        yield from self._data
-
-    def collect(self) -> list[T]:
-        """Consume all records into a list."""
-        return list(self)
-
-
 @dataclass
-class ExtractorRegistration:
-    name: str
+class _ResourceMeta:
+    """Internal metadata for a registered resource."""
+
     func: Callable[..., Any]
-    config_model: type[BaseModel]
-    record_type: type[BaseModel]
+    name: str
     description: str | None = None
     tags: list[str] = field(default_factory=list)
     deprecated: bool = False
     primary_key: str | list[str] | None = None
-    write_disposition: WriteDisposition = WriteDisposition.APPEND
-    incremental_params: dict[str, Any] = field(default_factory=dict)
-    source_name: str | None = None
-
-
-@dataclass
-class LoaderRegistration:
-    name: str
-    func: Callable[..., Any]
-    config_model: type[BaseModel]
-    record_type: type[BaseModel] | None
-    records_param: str | None
-
-
-@dataclass
-class PluginGroup:
-    extractors: dict[str, ExtractorRegistration] = field(default_factory=dict)
-    loaders: dict[str, LoaderRegistration] = field(default_factory=dict)
-
-
-@dataclass
-class _EntityMeta:
-    func: Callable[..., Any]
-    description: str | None = None
-    tags: list[str] = field(default_factory=list)
-    deprecated: bool = False
-    primary_key: str | list[str] | None = None
-    write_disposition: WriteDisposition = WriteDisposition.APPEND
+    write_disposition: str = "append"
+    merge_key: str | list[str] | None = None
+    table_name: str | None = None
+    selected: bool = True
 
 
 class Source(BaseModel):
-    """Shared config for a group of related extractors — like FastAPI's APIRouter.
+    """Shared config for a group of related resources — like FastAPI's APIRouter.
 
-    Create programmatically or via subclass:
+    Create programmatically or via subclass::
 
         # Programmatic — types inferred from values:
         github = Source(
+            name="github",
             base_url="https://api.github.com",
-            token="ghp_...",
+            token=Env("GH_TOKEN"),
             org="anthropics",
         )
 
-        # Class-based — for complex schemas (validators, descriptions, etc.):
-        class MlflowSource(Source):
-            tracking_uri: str
-            token: str = ""
+        # Class-based — for complex schemas:
+        class GitHubSource(Source):
+            base_url: str = "https://api.github.com"
+            token: str
+            org: str
 
-        mlflow = MlflowSource(tracking_uri="http://localhost:5000")
+    Then register resources (like dlt, but with FastAPI-style decorators)::
 
-    Then register entities:
-
-        @github.entity()
-        def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
-            print(github.org)  # access source via closure
+        @github.resource(primary_key="id", write_disposition="merge")
+        def repositories(
+            updated_at=dlt.sources.incremental("updated_at"),
+        ) -> Iterator[dict]:
             ...
 
         app.include_source(github)
+        app.run(destination="duckdb")
     """
 
-    _entities: dict[str, _EntityMeta] = PrivateAttr(default_factory=dict)
+    _resources: dict[str, _ResourceMeta] = PrivateAttr(default_factory=dict)
     _source_name: str | None = PrivateAttr(default=None)
+
+    def __init__(self, **kwargs: Any) -> None:
+        # Resolve Env values before Pydantic validation
+        resolved = {
+            k: v.resolve() if isinstance(v, Env) else v
+            for k, v in kwargs.items()
+        }
+        super().__init__(**resolved)
 
     def __new__(cls, **kwargs: Any) -> Source:
         if cls is Source:
@@ -177,12 +127,13 @@ class Source(BaseModel):
                 for k, v in kwargs.items()
             }
             # Direct Source(...) call — dynamically create a typed subclass
+            # 'name' becomes a regular model field alongside base_url, token, etc.
             fields = {k: (type(v), v) for k, v in resolved.items()}
             dynamic_cls = create_model("Source", __base__=Source, **fields)  # type: ignore[call-overload]
             return dynamic_cls(**resolved)
         return super().__new__(cls)
 
-    def entity(
+    def resource(
         self,
         name: str | None = None,
         *,
@@ -190,42 +141,96 @@ class Source(BaseModel):
         tags: list[str] | None = None,
         deprecated: bool = False,
         primary_key: str | list[str] | None = None,
-        write_disposition: str | WriteDisposition = WriteDisposition.APPEND,
+        write_disposition: str = "append",
+        merge_key: str | list[str] | None = None,
+        table_name: str | None = None,
+        selected: bool = True,
     ) -> Callable[..., Any]:
-        """Decorator to register an entity extractor on this source."""
+        """Decorator to register a resource on this source.
+
+        Mirrors ``dlt.resource()`` parameters with FastAPI-style decorator DX.
+
+        Parameters
+        ----------
+        name:
+            Resource name. Defaults to function name.
+        primary_key:
+            Column(s) used as primary key (for merge).
+        write_disposition:
+            How data is written: ``"append"``, ``"replace"``, or ``"merge"``.
+        merge_key:
+            Column(s) used to match records for merge.
+        table_name:
+            Destination table name. Defaults to resource name.
+        selected:
+            Whether this resource runs by default.
+        """
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            key = name or func.__name__  # type: ignore[attr-defined]
-            self._entities[key] = _EntityMeta(
+            key = name or func.__name__
+            self._resources[key] = _ResourceMeta(
                 func=func,
-                description=description,
+                name=key,
+                description=description or func.__doc__,
                 tags=tags or [],
                 deprecated=deprecated,
                 primary_key=primary_key,
-                write_disposition=WriteDisposition(write_disposition),
+                write_disposition=write_disposition,
+                merge_key=merge_key,
+                table_name=table_name or key,
+                selected=selected,
             )
             return func
 
         return decorator
 
-    def _build_plugin_group(self) -> PluginGroup:
-        """Build registrations — called lazily by app.include()."""
-        from fastelt.extractor import create_extractor_registration
+    def _build_dlt_source(
+        self,
+        resource_names: list[str] | None = None,
+    ) -> dlt.sources.DltSource:
+        """Convert this Source into a ``dlt.source`` with ``dlt.resource`` entries.
 
-        extractors: dict[str, ExtractorRegistration] = {}
-        for key, meta in self._entities.items():
+        Parameters
+        ----------
+        resource_names:
+            If provided, only include these resources (selective run).
+        """
+        source_instance = self
+        resource_metas = dict(self._resources)
+        source_name = self._source_name or type(self).__name__.lower()
+
+        # Build dlt resources from registered functions
+        dlt_resources: list[Any] = []
+        for key, meta in resource_metas.items():
+            if resource_names and key not in resource_names:
+                continue
+            if not meta.selected and not (resource_names and key in resource_names):
+                continue
+
+            if meta.deprecated:
+                logger.warning("Resource '{}' is deprecated", key)
+
+            # Bind source to function if it declares a source param
             bound = self._bind_source(meta.func)
-            extractors[key] = create_extractor_registration(
-                key,
-                bound,
-                description=meta.description,
-                tags=meta.tags,
-                deprecated=meta.deprecated,
-                primary_key=meta.primary_key,
-                write_disposition=meta.write_disposition,
-                source_name=self._source_name,
-            )
-        return PluginGroup(extractors=extractors)
+
+            # Build dlt.resource kwargs
+            res_kwargs: dict[str, Any] = {
+                "name": meta.table_name or key,
+                "primary_key": meta.primary_key,
+                "write_disposition": meta.write_disposition,
+            }
+            if meta.merge_key:
+                res_kwargs["merge_key"] = meta.merge_key
+
+            dlt_res = dlt.resource(bound, **res_kwargs)
+            dlt_resources.append(dlt_res)
+
+        # Create dlt source wrapping these resources
+        @dlt.source(name=source_name)
+        def _make_source() -> Any:
+            return dlt_resources
+
+        return _make_source()
 
     def _bind_source(self, func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap function to inject this source instance if it declares a Source param.
@@ -234,7 +239,11 @@ class Source(BaseModel):
         1. Parameter annotated as a Source subclass (explicit)
         2. Parameter with no annotation and no default (convention)
         """
-        hints = inspect.get_annotations(func, eval_str=True)
+        try:
+            hints = inspect.get_annotations(func, eval_str=True)
+        except NameError:
+            # Annotation references a locally-defined class that can't be resolved
+            hints = inspect.get_annotations(func, eval_str=False)
         sig = inspect.signature(func)
 
         source_param: str | None = None
@@ -242,6 +251,10 @@ class Source(BaseModel):
             hint = hints.get(param_name)
             # Explicit: annotated as Source subclass
             if hint is not None and isinstance(hint, type) and issubclass(hint, Source):
+                source_param = param_name
+                break
+            # String annotation containing "Source" — treat as source param
+            if isinstance(hint, str) and "Source" in hint:
                 source_param = param_name
                 break
             # Convention: no annotation, no default
@@ -266,3 +279,11 @@ class Source(BaseModel):
         bound.__annotations__ = {k: v for k, v in hints.items() if k != source_key}
 
         return bound
+
+    def list_resources(self) -> list[str]:
+        """Return names of registered resources."""
+        return list(self._resources.keys())
+
+    def get_resource_meta(self, name: str) -> _ResourceMeta:
+        """Get metadata for a resource."""
+        return self._resources[name]
