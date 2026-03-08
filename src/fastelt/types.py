@@ -13,13 +13,14 @@ from __future__ import annotations
 import functools
 import inspect
 import os
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, get_args, get_origin
 
 import dlt
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, PrivateAttr, create_model
+from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, create_model
 
 _UNSET = object()
 
@@ -86,6 +87,93 @@ class Secret(Env):
 
     def __repr__(self) -> str:
         return f"Secret({self._var!r})"
+
+
+class SchemaFrozenError(Exception):
+    """Raised when extra columns are detected on a frozen resource.
+
+    A frozen resource (``@source.resource(frozen=True)``) enforces a strict
+    schema — any columns not defined in the ``response_model`` are rejected.
+    """
+
+
+def _get_model_known_keys(model_cls: type[BaseModel]) -> set[str]:
+    """Return all keys a model recognizes (field names + aliases)."""
+    known: set[str] = set()
+    for field_name, field_info in model_cls.model_fields.items():
+        known.add(field_name)
+        if field_info.alias:
+            known.add(field_info.alias)
+        if field_info.validation_alias:
+            # validation_alias can be str or AliasPath/AliasChoices
+            alias = field_info.validation_alias
+            if isinstance(alias, str):
+                known.add(alias)
+    # Also account for alias_generator: generate alias for each field name
+    config = model_cls.model_config
+    alias_gen = config.get("alias_generator")
+    if alias_gen:
+        for field_name in model_cls.model_fields:
+            try:
+                known.add(alias_gen(field_name))
+            except Exception:
+                pass
+    return known
+
+
+def _validate_record(
+    record: dict[str, Any],
+    model_cls: type[BaseModel],
+    frozen: bool,
+    resource_name: str,
+) -> dict[str, Any]:
+    """Validate a single record dict through a pydantic model.
+
+    - Enforces types and runs field/model validators (data quality).
+    - Normalizes column names via alias_generator.
+    - Extra keys: warns (default) or raises SchemaFrozenError (frozen=True).
+    """
+    known_keys = _get_model_known_keys(model_cls)
+    extra_keys = set(record.keys()) - known_keys
+
+    if extra_keys:
+        if frozen:
+            raise SchemaFrozenError(
+                f"Resource '{resource_name}' is frozen but received new columns: "
+                f"{sorted(extra_keys)}. Update the response_model to accept them "
+                f"or remove frozen=True."
+            )
+        else:
+            warnings.warn(
+                f"Resource '{resource_name}': new keys not ingested: "
+                f"{sorted(extra_keys)}. Add them to the response_model to ingest.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Filter to known keys before validation so pydantic doesn't choke on extras
+    filtered = {k: v for k, v in record.items() if k in known_keys}
+    validated = model_cls.model_validate(filtered)
+    return validated.model_dump(by_alias=False)
+
+
+def _wrap_with_validation(
+    gen_func: Callable[..., Any],
+    model_cls: type[BaseModel],
+    frozen: bool,
+    resource_name: str,
+) -> Callable[..., Any]:
+    """Wrap a generator function to validate each yielded record."""
+
+    @functools.wraps(gen_func)
+    def wrapper(**kwargs: Any) -> Iterator[dict[str, Any]]:
+        for record in gen_func(**kwargs):
+            if isinstance(record, dict):
+                yield _validate_record(record, model_cls, frozen, resource_name)
+            else:
+                yield record
+
+    return wrapper
 
 
 def _resolve_env_params(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -168,6 +256,8 @@ class _ResourceMeta:
     merge_key: str | list[str] | None = None
     table_name: str | None = None
     selected: bool = True
+    response_model: type[BaseModel] | None = None
+    frozen: bool = False
 
 
 class Source(BaseModel):
@@ -240,6 +330,8 @@ class Source(BaseModel):
         merge_key: str | list[str] | None = None,
         table_name: str | None = None,
         selected: bool = True,
+        response_model: type[BaseModel] | None = None,
+        frozen: bool = False,
     ) -> Callable[..., Any]:
         """Decorator to register a resource on this source.
 
@@ -259,6 +351,14 @@ class Source(BaseModel):
             Destination table name. Defaults to resource name.
         selected:
             Whether this resource runs by default.
+        response_model:
+            Pydantic model for record validation, type enforcement, column
+            normalization (via ``alias_generator``), and data quality checks
+            (via field validators).  Like FastAPI's ``response_model``.
+        frozen:
+            If ``True``, extra columns not in ``response_model`` raise
+            :class:`SchemaFrozenError` instead of a warning.  Use for
+            strict schema enforcement.
         """
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -274,6 +374,8 @@ class Source(BaseModel):
                 merge_key=merge_key,
                 table_name=table_name or key,
                 selected=selected,
+                response_model=response_model,
+                frozen=frozen,
             )
             return func
 
@@ -308,6 +410,12 @@ class Source(BaseModel):
             # Resolve env params (str annotations + Annotated), then bind source
             bound = _resolve_env_params(meta.func)
             bound = self._bind_source(bound)
+
+            # Wrap with pydantic validation if response_model is set
+            if meta.response_model is not None:
+                bound = _wrap_with_validation(
+                    bound, meta.response_model, meta.frozen, key
+                )
 
             # Build dlt.resource kwargs
             res_kwargs: dict[str, Any] = {

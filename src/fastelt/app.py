@@ -10,6 +10,7 @@ from typing import Any
 
 import dlt
 from loguru import logger
+from pydantic import BaseModel
 
 from fastelt.types import Source
 
@@ -58,6 +59,8 @@ class FastELT:
         write_disposition: str = "append",
         merge_key: str | list[str] | None = None,
         table_name: str | None = None,
+        response_model: type[BaseModel] | None = None,
+        frozen: bool = False,
     ) -> Callable[..., Any]:
         """Register a resource as its own source — like ``@app.get`` in FastAPI.
 
@@ -69,10 +72,9 @@ class FastELT:
 
             app = FastELT(pipeline_name="demo", destination="duckdb")
 
-            @app.source("users", primary_key="id", write_disposition="merge")
+            @app.source("users", primary_key="id", response_model=UserModel)
             def users():
-                yield {"id": 1, "name": "Alice"}
-                yield {"id": 2, "name": "Bob"}
+                yield {"id": 1, "name": "Alice", "age": 30}
 
             app.run()
 
@@ -88,6 +90,11 @@ class FastELT:
             Column(s) used to match records for merge.
         table_name:
             Destination table name.  Defaults to resource name.
+        response_model:
+            Pydantic model for record validation, type enforcement, column
+            normalization, and data quality checks.
+        frozen:
+            If ``True``, extra columns not in ``response_model`` raise an error.
         """
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -99,6 +106,8 @@ class FastELT:
                 write_disposition=write_disposition,
                 merge_key=merge_key,
                 table_name=table_name,
+                response_model=response_model,
+                frozen=frozen,
             )(func)
             self.include_source(src, name=source_name)
             return func
