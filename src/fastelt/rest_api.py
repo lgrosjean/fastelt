@@ -5,30 +5,45 @@ authentication, incremental loading, and schema inference automatically.
 
 Usage::
 
-    from fastelt import FastELT
+    from fastelt import FastELT, Env
     from fastelt.rest_api import RESTAPISource
 
-    github_api = RESTAPISource(
+    github = RESTAPISource(
         name="github",
         base_url="https://api.github.com",
-        headers={"Authorization": f"Bearer {token}"},
+        auth={
+            "type": "bearer",
+            "token": Env("GH_TOKEN"),
+        },
+        paginator="header_link",
         resources=[
             {
                 "name": "repos",
-                "endpoint": "/orgs/anthropics/repos",
+                "endpoint": {
+                    "path": "/orgs/{org}/repos",
+                    "params": {"org": "anthropics", "per_page": 100},
+                },
                 "primary_key": "id",
                 "write_disposition": "merge",
             },
             {
                 "name": "issues",
-                "endpoint": "/repos/anthropics/fastelt/issues",
+                "endpoint": {
+                    "path": "/repos/{org}/{repo}/issues",
+                    "params": {
+                        "org": "anthropics",
+                        "repo": "anthropic-sdk-python",
+                        "state": "open",
+                    },
+                },
                 "primary_key": "id",
+                "write_disposition": "append",
             },
         ],
     )
 
-    app = FastELT(pipeline_name="github")
-    app.include_rest_api(github_api)
+    app = FastELT(pipeline_name="github_pipeline")
+    app.include_source(github)
     app.run(destination="duckdb")
 """
 
@@ -40,10 +55,27 @@ from typing import Any
 import dlt
 from loguru import logger
 
+from fastelt.types import Env
+
+
+def _resolve_env_values(obj: Any) -> Any:
+    """Recursively resolve Env instances in nested dicts/lists."""
+    if isinstance(obj, Env):
+        return obj.resolve()
+    if isinstance(obj, dict):
+        return {k: _resolve_env_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_env_values(v) for v in obj]
+    return obj
+
 
 @dataclass
 class RESTAPISource:
     """Declarative REST API source wrapping ``dlt.sources.rest_api``.
+
+    Maps directly to dlt's ``rest_api_source`` config, with fastELT's ``Env``
+    support for secrets.  All dlt rest_api features are supported: pagination,
+    auth, incremental loading, parent-child relationships, etc.
 
     Parameters
     ----------
@@ -52,23 +84,46 @@ class RESTAPISource:
     base_url:
         Base URL for all endpoints.
     resources:
-        List of resource configs. Each is a dict with at minimum
-        ``name`` and ``endpoint``.  Supports all dlt rest_api
-        resource config fields.
+        List of resource configs.  Each is a dict matching dlt's
+        ``EndpointResource`` schema.  At minimum needs ``name`` and
+        ``endpoint`` (string path or dict with ``path`` + ``params``).
     headers:
         Default headers for all requests.
     auth:
-        Authentication config (dlt auth dict or object).
+        Authentication config.  Supports dlt auth types::
+
+            # Bearer token
+            {"type": "bearer", "token": Env("GH_TOKEN")}
+
+            # API key
+            {"type": "api_key", "name": "X-API-Key", "api_key": Env("KEY")}
+
+            # HTTP Basic
+            {"type": "http_basic", "username": "user", "password": Env("PASS")}
+
+        Or a string shorthand: ``"bearer"``
     paginator:
-        Default paginator config for all endpoints.
+        Default paginator for all endpoints.  String shorthand::
+
+            "header_link"   — GitHub-style Link header
+            "json_link"     — JSON response with next link
+            "offset"        — offset/limit
+            "page_number"   — page number
+            "cursor"        — cursor-based
+            "auto"          — auto-detect (default)
+
+        Or a dict with paginator config.
+    resource_defaults:
+        Default config applied to all resources (e.g. default write_disposition).
     """
 
     name: str
     base_url: str
     resources: list[dict[str, Any]]
     headers: dict[str, str] = field(default_factory=dict)
-    auth: dict[str, Any] | Any | None = None
+    auth: dict[str, Any] | str | Any | None = None
     paginator: dict[str, Any] | str | None = None
+    resource_defaults: dict[str, Any] | None = None
 
     def _build_dlt_source(
         self,
@@ -83,31 +138,39 @@ class RESTAPISource:
                 "Install with: pip install fastelt[rest_api]"
             ) from e
 
-        # Build dlt rest_api config
+        # Build dlt rest_api config — resolve Env values throughout
         client_config: dict[str, Any] = {
             "base_url": self.base_url,
         }
         if self.headers:
-            client_config["headers"] = self.headers
+            client_config["headers"] = _resolve_env_values(self.headers)
         if self.auth:
-            client_config["auth"] = self.auth
+            client_config["auth"] = _resolve_env_values(self.auth)
         if self.paginator:
             client_config["paginator"] = self.paginator
 
         # Filter resources if selective run
-        resources_config = self.resources
+        resources_config = list(self.resources)
         if resource_names:
             resources_config = [
                 r for r in resources_config if r.get("name") in resource_names
             ]
 
+        # Resolve any Env values in resource configs
+        resources_config = _resolve_env_values(resources_config)
+
         config: dict[str, Any] = {
             "client": client_config,
             "resources": resources_config,
         }
+        if self.resource_defaults:
+            config["resource_defaults"] = _resolve_env_values(self.resource_defaults)
 
-        logger.debug("Building REST API source '{}' with {} resources",
-                      self.name, len(resources_config))
+        logger.debug(
+            "Building REST API source '{}' with {} resources",
+            self.name,
+            len(resources_config),
+        )
 
         return rest_api_source(config, name=self.name)
 

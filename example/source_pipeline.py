@@ -1,7 +1,9 @@
-"""Example: Source-based pipeline — like FastAPI's APIRouter wrapping dlt.
+"""Example: Custom Source with @resource decorators + dlt incremental.
 
-A GitHub source with shared config (base_url, token), exposing
-multiple resources that get auto-loaded into DuckDB via dlt.
+For APIs that need custom extraction logic (pagination, transformation,
+business logic), use Source + @resource decorators.
+
+For standard REST APIs, use RESTAPISource instead (see github_rest_api.py).
 
 Requires: pip install httpx
 Usage:    GH_TOKEN=ghp_... python example/source_pipeline.py
@@ -14,7 +16,7 @@ import httpx
 
 from fastelt import Env, FastELT, Source
 
-# --- Shared source config (no class needed) ---
+# --- Custom source with shared config ---
 
 github = Source(
     name="github",
@@ -24,19 +26,16 @@ github = Source(
 )
 
 
-# --- Resources: just use `github` from scope, like any Python closure ---
-
-
 @github.resource(
-    description="Fetch repositories from a GitHub org",
-    tags=["core", "github"],
     primary_key="id",
     write_disposition="merge",
+    description="Fetch repositories with custom star filtering",
 )
 def repositories(
     updated_at=dlt.sources.incremental("updated_at", initial_value="2020-01-01"),
     min_stars: int = 0,
 ) -> Iterator[dict]:
+    """Custom logic: filter by star count (not possible with RESTAPISource)."""
     headers = {"Authorization": f"Bearer {github.token}"}
     url = f"{github.base_url}/orgs/{github.org}/repos"
     page = 1
@@ -56,47 +55,15 @@ def repositories(
         page += 1
 
 
-@github.resource(
-    description="Fetch pull requests for a repository",
-    tags=["core", "github"],
-    primary_key="id",
-    write_disposition="append",
-)
-def pull_requests(
-    repo: str = "anthropic-sdk-python",
-    state: str = "open",
-) -> Iterator[dict]:
-    headers = {"Authorization": f"Bearer {github.token}"}
-    url = f"{github.base_url}/repos/{github.org}/{repo}/pulls"
-    page = 1
-    while True:
-        resp = httpx.get(
-            url,
-            headers=headers,
-            params={"state": state, "per_page": 100, "page": page},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            break
-        yield from data
-        page += 1
-
-
-# --- App: wire source to dlt pipeline ---
+# --- App ---
 
 app = FastELT(
-    pipeline_name="github_pipeline",
+    pipeline_name="github_custom",
     destination="duckdb",
     dataset_name="raw_github",
 )
 app.include_source(github)
 
-
 if __name__ == "__main__":
-    # Run all resources to DuckDB
     info = app.run()
     print(f"Pipeline completed: {info}")
-
-    # Or run just one resource:
-    # info = app.run(resources=["repositories"])
