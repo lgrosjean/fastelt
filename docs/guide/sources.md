@@ -229,6 +229,110 @@ def stargazers():
 app.include_source(github)  # registers all three
 ```
 
+!!! tip
+    As your project grows, you'll want to split sources into separate files. See [Bigger Applications](bigger-applications.md) for the recommended structure.
+
+## Parent-Child Resource Chaining
+
+Resources can depend on other resources via type annotations. FastELT auto-detects the dependency by matching a parameter's `BaseModel` type to the return type of another resource — no new decorator needed.
+
+### Basic chaining
+
+```python
+from pydantic import BaseModel
+
+class User(BaseModel):
+    id: int
+    name: str
+
+class Repo(BaseModel):
+    id: int
+    user_id: int
+    name: str
+
+github = Source(name="github", token=Env("GH_TOKEN"))
+
+@github.resource(primary_key="id")
+def users() -> list[User]:
+    yield {"id": 1, "name": "Alice"}
+    yield {"id": 2, "name": "Bob"}
+
+# `user: User` matches `users() -> list[User]` → auto-detected as child
+@github.resource(primary_key="id")
+def repos(user: User) -> list[Repo]:
+    yield {"id": 100, "user_id": user.id, "name": f"repo-{user.name}"}
+```
+
+The child function receives a **validated Pydantic model instance** — you get dot-access (`user.id`, `user.name`) instead of dict bracket access.
+
+Under the hood, `users` becomes a `dlt.resource` and `repos` becomes a `dlt.transformer(data_from=users)`.
+
+### Multi-level chains
+
+Chains of any depth work:
+
+```python
+class Commit(BaseModel):
+    id: int
+    repo_id: int
+    message: str
+
+@github.resource(primary_key="id")
+def commits(repo: Repo) -> list[Commit]:
+    yield {"id": 1000, "repo_id": repo.id, "message": "init"}
+```
+
+This builds: `users → repos → commits`.
+
+### Auto `response_model` from return type
+
+When you annotate a resource with `-> list[Model]`, the `response_model` is set automatically:
+
+```python
+@github.resource(primary_key="id")
+def users() -> list[User]:  # response_model=User is inferred
+    yield {"id": 1, "name": "Alice"}
+```
+
+Supported return type forms: `list[Model]`, `Iterator[Model]`, `Generator[Model, ...]`, `Iterable[Model]`, or bare `Model`. If you pass an explicit `response_model`, it takes precedence.
+
+### Composing with other features
+
+Parent-child chaining composes with all existing features — env resolution, source injection, and incremental loading:
+
+```python
+@github.resource(primary_key="id")
+def repos(
+    user: User,                                          # parent dependency
+    source: GitHubSource,                                # source injection
+    token: Annotated[str, Secret("GH_TOKEN")],           # env resolution
+) -> list[Repo]:
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = httpx.get(f"{source.base_url}/users/{user.id}/repos", headers=headers)
+    yield from resp.json()
+```
+
+Each resolution step strips its consumed parameters — no conflicts between features.
+
+### Rules and constraints
+
+| Rule | Detail |
+|------|--------|
+| **One producer per type** | If two resources return `-> list[User]`, a `ValueError` is raised at registration time |
+| **One parent per child** | dlt transformers support a single parent; multiple `BaseModel` params raises `ValueError` |
+| **Auto-include parents** | Running `resources=["repos"]` automatically includes `users` |
+| **Decorator order doesn't matter** | Dependencies are resolved at build time, not registration time |
+
+### Introspection
+
+```python
+# Which resources depend on "users"?
+github.get_children("users")       # ["repos"]
+
+# Full dependency tree
+github.get_resource_tree()         # {"users": ["repos"], "repos": ["commits"]}
+```
+
 ## Selective runs
 
 Run specific sources or resources:

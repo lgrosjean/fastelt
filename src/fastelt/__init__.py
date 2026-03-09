@@ -8,7 +8,7 @@ schema evolution, merge strategies) with FastAPI's developer experience.
 from fastelt.app import FastELT
 from fastelt.config import Env, Secret
 from fastelt.destinations import BigQueryDestination, Destination, DuckDBDestination
-from fastelt.rest_api import RESTAPISource
+from fastelt.sources.rest_api import RESTAPISource
 from fastelt.sources.types import Incremental
 from fastelt.types import SchemaFrozenError, Source
 

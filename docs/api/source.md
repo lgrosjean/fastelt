@@ -108,6 +108,34 @@ source.get_resource_meta(name: str) -> _ResourceMeta
 
 Returns the internal metadata for a resource.
 
+---
+
+### `get_children()`
+
+```python
+source.get_children(resource_name: str) -> list[str]
+```
+
+Returns names of resources that depend on this resource's output type.
+
+```python
+github.get_children("users")  # ["repos"]
+```
+
+---
+
+### `get_resource_tree()`
+
+```python
+source.get_resource_tree() -> dict[str, list[str]]
+```
+
+Returns the full `{parent: [children]}` dependency mapping.
+
+```python
+github.get_resource_tree()  # {"users": ["repos"], "repos": ["commits"]}
+```
+
 ## Subclasses
 
 FastELT provides specialized Source subclasses:

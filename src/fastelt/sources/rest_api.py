@@ -5,17 +5,13 @@ authentication, incremental loading, and schema inference automatically.
 
 Usage::
 
-    from fastelt import FastELT
-    from fastelt.config import Env
-    from fastelt.rest_api import RESTAPISource
+    from fastelt import FastELT, Env
+    from fastelt.sources.rest_api import RESTAPISource, BearerTokenAuth
 
     github = RESTAPISource(
         name="github",
         base_url="https://api.github.com",
-        auth={
-            "type": "bearer",
-            "token": Env("GH_TOKEN"),
-        },
+        auth=BearerTokenAuth(token=Env("GH_TOKEN")),
         paginator="header_link",
         resources=[
             {
@@ -27,19 +23,6 @@ Usage::
                 "primary_key": "id",
                 "write_disposition": "merge",
             },
-            {
-                "name": "issues",
-                "endpoint": {
-                    "path": "/repos/{org}/{repo}/issues",
-                    "params": {
-                        "org": "anthropics",
-                        "repo": "anthropic-sdk-python",
-                        "state": "open",
-                    },
-                },
-                "primary_key": "id",
-                "write_disposition": "append",
-            },
         ],
     )
 
@@ -50,13 +33,33 @@ Usage::
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import dlt
+from dlt.sources.helpers.rest_client.auth import (
+    APIKeyAuth,
+    AuthConfigBase,
+    BearerTokenAuth,
+    HttpBasicAuth,
+    OAuth2ClientCredentials,
+)
 from loguru import logger
 
 from fastelt._utils import resolve_env_values
 from fastelt.types import Source
+
+
+def _resolve_auth(auth: Any) -> Any:
+    """Resolve ``Env`` values inside a dlt auth object or a dict/str config."""
+    if isinstance(auth, AuthConfigBase):
+        for field in dataclasses.fields(auth):
+            value = getattr(auth, field.name)
+            resolved = resolve_env_values(value)
+            if resolved is not value:
+                setattr(auth, field.name, resolved)
+        return auth
+    return resolve_env_values(auth)
 
 
 class RESTAPISource(Source):
@@ -79,16 +82,20 @@ class RESTAPISource(Source):
     headers:
         Default headers for all requests.
     auth:
-        Authentication config.  Supports dlt auth types::
+        Authentication config.  Accepts dlt auth class instances::
 
             # Bearer token
-            {"type": "bearer", "token": Env("GH_TOKEN")}
+            BearerTokenAuth(token=Env("GH_TOKEN"))
 
             # API key
-            {"type": "api_key", "name": "X-API-Key", "api_key": Env("KEY")}
+            APIKeyAuth(name="X-API-Key", api_key=Env("KEY"))
 
             # HTTP Basic
-            {"type": "http_basic", "username": "user", "password": Env("PASS")}
+            HttpBasicAuth(username="user", password=Env("PASS"))
+
+        Or dict configs::
+
+            {"type": "bearer", "token": Env("GH_TOKEN")}
 
         Or a string shorthand: ``"bearer"``
     paginator:
@@ -110,7 +117,7 @@ class RESTAPISource(Source):
     base_url: str
     resources: list[dict[str, Any]]
     headers: dict[str, str] = {}
-    auth: dict[str, Any] | str | Any | None = None
+    auth: dict[str, Any] | str | AuthConfigBase | None = None
     paginator: dict[str, Any] | str | None = None
     resource_defaults: dict[str, Any] | None = None
 
@@ -134,7 +141,7 @@ class RESTAPISource(Source):
         if self.headers:
             client_config["headers"] = resolve_env_values(self.headers)
         if self.auth:
-            client_config["auth"] = resolve_env_values(self.auth)
+            client_config["auth"] = _resolve_auth(self.auth)
         if self.paginator:
             client_config["paginator"] = self.paginator
 
@@ -166,3 +173,13 @@ class RESTAPISource(Source):
     def list_resources(self) -> list[str]:
         """Return resource names."""
         return [r["name"] for r in self.resources if "name" in r]
+
+
+__all__ = [
+    "APIKeyAuth",
+    "AuthConfigBase",
+    "BearerTokenAuth",
+    "HttpBasicAuth",
+    "OAuth2ClientCredentials",
+    "RESTAPISource",
+]

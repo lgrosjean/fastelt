@@ -132,18 +132,53 @@ def users():
 
 Use `frozen=True` to reject unexpected columns with `SchemaFrozenError` instead of a warning.
 
+**Tip:** If your resource uses a `-> list[Model]` return annotation, `response_model` is set automatically — no need to specify it twice.
+
+### Parent-Child Resource Chaining
+
+Resources can depend on other resources via type annotations — no extra decorator needed:
+
+```python
+from pydantic import BaseModel
+
+class User(BaseModel):
+    id: int
+    name: str
+
+class Repo(BaseModel):
+    id: int
+    user_id: int
+    name: str
+
+github = Source(name="github", token=Env("GH_TOKEN"))
+
+@github.resource(primary_key="id")
+def users() -> list[User]:
+    yield {"id": 1, "name": "Alice"}
+    yield {"id": 2, "name": "Bob"}
+
+# Auto-detected: `user: User` matches `users() -> list[User]`
+@github.resource(primary_key="id")
+def repos(user: User) -> list[Repo]:
+    yield {"id": 100, "user_id": user.id, "name": f"repo-{user.name}"}
+```
+
+FastELT matches the `User` type annotation on `repos(user: User)` to the `users() -> list[User]` return type. Under the hood, `users` is built as a `dlt.resource` and `repos` as a `dlt.transformer(data_from=users)`. The child function receives a validated Pydantic model instance with dot-access to fields.
+
+Chains of any depth work: `users → repos → commits`. When running selectively (e.g., `resources=["repos"]`), parent resources are auto-included.
+
 ### REST API Source (Declarative)
 
 For standard REST APIs, define endpoints as config — dlt handles pagination, auth, and incremental loading:
 
 ```python
 from fastelt import Env, FastELT
-from fastelt.rest_api import RESTAPISource
+from fastelt.sources.rest_api import RESTAPISource, BearerTokenAuth
 
 github = RESTAPISource(
     name="github",
     base_url="https://api.github.com",
-    auth={"type": "bearer", "token": Env("GH_TOKEN")},
+    auth=BearerTokenAuth(token=Env("GH_TOKEN")),
     paginator="header_link",
     resources=[
         {
@@ -215,6 +250,7 @@ The CLI auto-discovers your `FastELT` app instance, like `fastapi run`.
 | Define pipelines | Python decorators | YAML / JSON config | Python decorators |
 | Config | Inferred from Source fields | Manual definition | Manual / partial |
 | Data validation | Pydantic v2 `response_model` | None built-in | Schema inference |
+| Resource chaining | Type annotations (`User` → `Repo`) | Config-based | `dlt.transformer` + manual wiring |
 | Env var management | `Env()` / `Secret()` + auto-resolve | `.env` files | `dlt.secrets` |
 | Destinations | 20+ (via dlt) | 300+ connectors | 20+ |
 | Learning curve | Familiar if you know FastAPI | Tool-specific DSL | dlt-specific API |

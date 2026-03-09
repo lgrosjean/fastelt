@@ -9,17 +9,14 @@ Usage:  GH_TOKEN=ghp_... python example/github_rest_api.py
 from fastelt import FastELT
 from fastelt.config import Env
 from fastelt.destinations import DuckDBDestination
-from fastelt.rest_api import RESTAPISource
+from fastelt.sources.rest_api import RESTAPISource, BearerTokenAuth
 
 # --- GitHub API source (declarative — no code needed) ---
 
 github = RESTAPISource(
     name="github",
     base_url="https://api.github.com",
-    auth={
-        "type": "bearer",
-        "token": Env("GH_TOKEN"),
-    },
+    auth=BearerTokenAuth(token=Env("GH_TOKEN")),
     # GitHub uses Link header pagination
     paginator="header_link",
     # Default config for all resources

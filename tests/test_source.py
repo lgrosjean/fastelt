@@ -324,3 +324,260 @@ def test_non_str_params_left_alone():
     dlt_source = src._build_dlt_source()
     records = list(list(dlt_source.resources.values())[0])
     assert records[0]["limit"] == 10
+
+
+# -- Type extraction helper --
+
+from collections.abc import Generator, Iterable, Iterator as IteratorABC
+from pydantic import BaseModel
+
+from fastelt.types import _extract_inner_type
+
+
+class _User(BaseModel):
+    id: int
+    name: str
+
+
+class _Repo(BaseModel):
+    id: int
+    user_id: int
+    name: str
+
+
+def test_extract_inner_type_list():
+    assert _extract_inner_type(list[_User]) is _User
+
+
+def test_extract_inner_type_iterator():
+    assert _extract_inner_type(Iterator[_User]) is _User
+
+
+def test_extract_inner_type_bare_model():
+    assert _extract_inner_type(_User) is _User
+
+
+def test_extract_inner_type_non_model():
+    assert _extract_inner_type(list[dict]) is None
+    assert _extract_inner_type(None) is None
+    assert _extract_inner_type(str) is None
+
+
+# -- Return type auto-sets response_model --
+
+
+def test_return_type_auto_sets_response_model():
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    meta = src.get_resource_meta("users")
+    assert meta.response_model is _User
+    assert meta.produces_type is _User
+
+
+def test_explicit_response_model_not_overridden():
+    """Explicit response_model is kept even when return type is annotated."""
+
+    class Custom(BaseModel):
+        id: int
+        name: str
+        extra: str = ""
+
+    src = Source(name="test")
+
+    @src.resource(primary_key="id", response_model=Custom)
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    meta = src.get_resource_meta("users")
+    assert meta.response_model is Custom
+
+
+# -- Parent-child auto-detection --
+
+
+def test_parent_child_auto_detection():
+    """users→repos chain runs end-to-end."""
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+        yield {"id": 2, "name": "Bob"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User) -> list[_Repo]:
+        yield {"id": 100 + user.id, "user_id": user.id, "name": f"repo-{user.name}"}
+
+    dlt_source = src._build_dlt_source()
+    # Collect repos output — should have one repo per user
+    repo_records = list(dlt_source.resources["repos"])
+    assert len(repo_records) == 2
+    names = {r["name"] for r in repo_records}
+    assert names == {"repo-Alice", "repo-Bob"}
+
+
+def test_child_receives_pydantic_instance():
+    """Child receives a validated Pydantic model instance."""
+    received = []
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User):
+        received.append(user)
+        yield {"id": 100, "user_id": user.id, "name": f"repo-{user.name}"}
+
+    dlt_source = src._build_dlt_source()
+    list(dlt_source.resources["repos"])
+
+    assert len(received) == 1
+    assert isinstance(received[0], _User)
+    assert received[0].id == 1
+    assert received[0].name == "Alice"
+
+
+class _Commit(BaseModel):
+    id: int
+    repo_id: int
+    message: str
+
+
+def test_three_level_chain():
+    """users→repos→commits builds and runs."""
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User) -> list[_Repo]:
+        yield {"id": 10, "user_id": user.id, "name": f"repo-{user.name}"}
+
+    @src.resource(primary_key="id")
+    def commits(repo: _Repo) -> list[_Commit]:
+        yield {"id": 100, "repo_id": repo.id, "message": "init"}
+
+    dlt_source = src._build_dlt_source()
+    commit_records = list(dlt_source.resources["commits"])
+    assert len(commit_records) == 1
+    assert commit_records[0]["repo_id"] == 10
+    assert commit_records[0]["message"] == "init"
+
+
+def test_duplicate_producer_raises():
+    """Two resources producing the same type raises ValueError."""
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    with pytest.raises(ValueError, match="Multiple resources produce"):
+
+        @src.resource(primary_key="id")
+        def more_users() -> list[_User]:
+            yield {"id": 2, "name": "Bob"}
+
+
+def test_parent_auto_included_on_selective_run():
+    """resources=["repos"] auto-includes parent 'users'."""
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User) -> list[_Repo]:
+        yield {"id": 100, "user_id": user.id, "name": f"repo-{user.name}"}
+
+    dlt_source = src._build_dlt_source(resource_names=["repos"])
+    repo_records = list(dlt_source.resources["repos"])
+    assert len(repo_records) == 1
+    assert repo_records[0]["name"] == "repo-Alice"
+
+
+def test_child_with_env_and_source_injection(monkeypatch):
+    """All features compose: env resolution + source injection + parent-child."""
+    monkeypatch.setenv("TEST_PREFIX", "v1")
+
+    # Use module-level GitHubSource (not local class) to avoid NameError
+    # with `from __future__ import annotations` + inspect.get_annotations(eval_str=True)
+    src = GitHubSource(token="abc", org="myorg")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User, source: GitHubSource, prefix: Annotated[str, Env("TEST_PREFIX")]) -> list[_Repo]:
+        yield {
+            "id": 100,
+            "user_id": user.id,
+            "name": f"{prefix}-{source.org}-{user.name}",
+        }
+
+    dlt_source = src._build_dlt_source()
+    repo_records = list(dlt_source.resources["repos"])
+    assert len(repo_records) == 1
+    assert repo_records[0]["name"] == "v1-myorg-Alice"
+
+
+def test_no_deps_resources_unchanged():
+    """Resources without parent deps work identically to before."""
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def items():
+        yield {"id": 1, "name": "a"}
+        yield {"id": 2, "name": "b"}
+
+    dlt_source = src._build_dlt_source()
+    records = list(dlt_source.resources["items"])
+    assert len(records) == 2
+    assert records[0]["name"] == "a"
+
+
+# -- Introspection helpers --
+
+
+def test_get_children():
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User) -> list[_Repo]:
+        yield {"id": 100, "user_id": user.id, "name": "r"}
+
+    assert src.get_children("users") == ["repos"]
+    assert src.get_children("repos") == []
+
+
+def test_get_resource_tree():
+    src = Source(name="test")
+
+    @src.resource(primary_key="id")
+    def users() -> list[_User]:
+        yield {"id": 1, "name": "Alice"}
+
+    @src.resource(primary_key="id")
+    def repos(user: _User) -> list[_Repo]:
+        yield {"id": 100, "user_id": user.id, "name": "r"}
+
+    @src.resource(primary_key="id")
+    def commits(repo: _Repo) -> list[_Commit]:
+        yield {"id": 1000, "repo_id": repo.id, "message": "init"}
+
+    tree = src.get_resource_tree()
+    assert tree == {"users": ["repos"], "repos": ["commits"]}

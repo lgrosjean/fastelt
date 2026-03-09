@@ -39,3 +39,4 @@ Internal dataclass holding metadata for a registered resource.
 | `selected` | `bool` | Whether the resource runs by default |
 | `response_model` | `type[BaseModel] \| None` | Pydantic model for validation |
 | `frozen` | `bool` | Whether extra columns raise an error |
+| `produces_type` | `type[BaseModel] \| None` | BaseModel subclass extracted from return annotation (for parent-child detection) |
