@@ -6,7 +6,7 @@ authors = [
     { name = "Léo Grosjean", email = "leo.grosjean@live.com" }
 ]
 description = "A FastAPI-inspired wrapper around dlt for ELT pipelines"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "dlt[duckdb]>=1.0",
     "pydantic>=2.0",
