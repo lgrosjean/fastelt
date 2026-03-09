@@ -43,15 +43,19 @@ pipeline = dlt.pipeline(pipeline_name="github", destination="duckdb", dataset_na
 pipeline.run(source)
 
 # FastELT — same dlt engine, cleaner DX
+from fastelt.config import Env
+from fastelt.destinations import DuckDBDestination
+
 github = Source(name="github", token=Env("GH_TOKEN"))
 
 @github.resource(primary_key="id", write_disposition="merge")
 def repos():
     ...
 
-app = FastELT(pipeline_name="github", destination="duckdb")
+db = DuckDBDestination()
+app = FastELT(pipeline_name="github")
 app.include_source(github)
-app.run()
+app.run(destination=db)
 ```
 
 ### 2. Automatic environment variable resolution
@@ -59,6 +63,8 @@ app.run()
 Three levels of automatic env var injection — no manual `os.environ` calls:
 
 ```python
+from fastelt.config import Env, Secret
+
 # Source field values
 github = Source(name="github", token=Env("GH_TOKEN"))
 
@@ -117,7 +123,24 @@ def issues():
 app.include_source(github)  # registers both resources
 ```
 
-### 5. Multiple source types for different use cases
+### 5. Typed destinations
+
+Register destinations as typed config objects — like FastAPI's dependency injection:
+
+```python
+from fastelt.destinations import DuckDBDestination, BigQueryDestination
+
+db = DuckDBDestination()
+bq = BigQueryDestination(project_id="my-project", location="EU")
+
+app.include_destination(db)
+app.include_destination(bq)
+
+app.run(destination=db)   # load to DuckDB
+app.run(destination=bq)   # load to BigQuery
+```
+
+### 6. Multiple source types for different use cases
 
 - **`Source`** — custom extraction with generator functions
 - **`RESTAPISource`** — declarative REST API extraction (pagination, auth, incremental)

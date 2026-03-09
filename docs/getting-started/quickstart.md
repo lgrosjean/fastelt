@@ -21,12 +21,15 @@ def users():
 
 Resources are generator functions that `yield` dict records. dlt handles schema inference and loading.
 
-## 2. Create the app and run
+## 2. Create a destination and run
 
 ```python
-app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
+from fastelt.destinations import DuckDBDestination
+
+db = DuckDBDestination()
+app = FastELT(pipeline_name="my_pipeline")
 app.include_source(local_data)
-app.run()
+app.run(destination=db)
 ```
 
 That's it — data flows from your CSV into DuckDB.
@@ -36,14 +39,18 @@ That's it — data flows from your CSV into DuckDB.
 For single-resource sources, skip the `Source` object entirely:
 
 ```python
-app = FastELT(pipeline_name="demo", destination="duckdb")
+from fastelt import FastELT
+from fastelt.destinations import DuckDBDestination
+
+db = DuckDBDestination()
+app = FastELT(pipeline_name="demo")
 
 @app.source("users", primary_key="id")
 def users():
     yield {"id": 1, "name": "Alice"}
     yield {"id": 2, "name": "Bob"}
 
-app.run()
+app.run(destination=db)
 ```
 
 ## 4. Add data validation with `response_model`
@@ -81,7 +88,8 @@ def users():
 Inject secrets without hardcoding:
 
 ```python
-from fastelt import Env, Source
+from fastelt import Source
+from fastelt.config import Env
 
 github = Source(
     name="github",
@@ -95,7 +103,7 @@ github = Source(
 ```bash
 pip install fastelt[cli]
 
-fastelt run --destination duckdb
+fastelt run duckdb
 fastelt list
 fastelt describe local:users
 ```

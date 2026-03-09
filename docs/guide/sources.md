@@ -7,7 +7,8 @@ Sources group related resources with shared configuration — like FastAPI's `AP
 When extracting from the same system (e.g., GitHub API, a database), multiple resources share the same connection details. A `Source` lets you define them once:
 
 ```python
-from fastelt import Source, Env
+from fastelt import Source
+from fastelt.config import Env
 
 github = Source(
     name="github",
@@ -22,12 +23,13 @@ github = Source(
 Use `@source.resource()` to register generator functions that yield dict records:
 
 ```python
-import dlt
+from typing import Annotated
+from fastelt.sources import Incremental
 import httpx
 
 @github.resource(primary_key="id", write_disposition="merge")
 def repositories(
-    updated_at=dlt.sources.incremental("updated_at", initial_value="2020-01-01"),
+    updated_at: Annotated[str, Incremental(initial_value="2020-01-01")],
 ):
     headers = {"Authorization": f"Bearer {github.token}"}
     resp = httpx.get(
@@ -41,10 +43,12 @@ Then include the source in your app:
 
 ```python
 from fastelt import FastELT
+from fastelt.destinations import DuckDBDestination
 
-app = FastELT(pipeline_name="github_pipeline", destination="duckdb")
+db = DuckDBDestination()
+app = FastELT(pipeline_name="github_pipeline")
 app.include_source(github)
-app.run()
+app.run(destination=db)
 ```
 
 ## Resource decorator parameters
@@ -72,14 +76,18 @@ def repos():
 For single-resource sources, use `@app.source` to skip creating a `Source` object:
 
 ```python
-app = FastELT(pipeline_name="demo", destination="duckdb")
+from fastelt import FastELT
+from fastelt.destinations import DuckDBDestination
+
+db = DuckDBDestination()
+app = FastELT(pipeline_name="demo")
 
 @app.source("users", primary_key="id", write_disposition="replace")
 def users():
     yield {"id": 1, "name": "Alice"}
     yield {"id": 2, "name": "Bob"}
 
-app.run()
+app.run(destination=db)
 ```
 
 This creates a `Source` behind the scenes and registers the function as its single resource.
@@ -128,7 +136,7 @@ Since `Source` extends `BaseModel`, you get full Pydantic v2 features: validator
 ### `Env` — lazy env var reference
 
 ```python
-from fastelt import Env, Source
+from fastelt.config import Env
 
 # Resolved at Source construction time
 github = Source(name="github", token=Env("GH_TOKEN"))
@@ -140,7 +148,7 @@ github = Source(name="github", token=Env("GH_TOKEN", default="fallback"))
 ### `Secret` — masked in logs
 
 ```python
-from fastelt import Secret, Source
+from fastelt.config import Secret
 
 github = Source(name="github", token=Secret("GH_TOKEN"))
 # repr: Source(name='github', token=Secret('GH_TOKEN'))
@@ -150,7 +158,7 @@ github = Source(name="github", token=Secret("GH_TOKEN"))
 
 ```python
 from typing import Annotated
-from fastelt import Env, Secret
+from fastelt.config import Secret
 
 @source.resource()
 def repos(token: Annotated[str, Secret("GH_TOKEN")]):
@@ -227,28 +235,39 @@ Run specific sources or resources:
 
 ```python
 # Run only the "github" source
-app.run(source="github")
+app.run(destination=db, source="github")
 
 # Run only specific resources
-app.run(resources=["repositories", "issues"])
+app.run(destination=db, resources=["repositories", "issues"])
 
 # Both
-app.run(source="github", resources=["repositories"])
+app.run(destination=db, source="github", resources=["repositories"])
 ```
 
 ## Incremental loading
 
-Use dlt's incremental cursors for efficient syncing:
+Use `Annotated` with `Incremental` for FastAPI-style incremental cursors:
 
 ```python
-import dlt
+from typing import Annotated
+from fastelt.sources import Incremental
 
 @api.resource(primary_key="id", write_disposition="merge")
 def events(
-    updated_at=dlt.sources.incremental("updated_at", initial_value="2024-01-01"),
+    updated_at: Annotated[str, Incremental(initial_value="2024-01-01")],
 ):
     print(f"Fetching events since {updated_at.last_value}")
     yield {"id": 1, "name": "signup", "updated_at": "2024-06-15T10:00:00"}
 ```
 
 On subsequent runs, `updated_at.last_value` reflects the last seen cursor value — dlt tracks this automatically.
+
+The `Incremental` marker supports the same parameters as `dlt.sources.incremental`:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cursor_path` | `str \| None` | parameter name | JSON path to the cursor field |
+| `initial_value` | `Any` | `None` | Starting value for the first run |
+| `end_value` | `Any` | `None` | Upper bound for the cursor |
+| `row_order` | `str \| None` | `None` | `"asc"` or `"desc"` |
+| `allow_external_schedulers` | `bool` | `False` | Allow external scheduler integration |

@@ -7,6 +7,7 @@ Like FastAPI wraps Starlette, FastELT wraps dlt with decorator-driven DX. You ge
 ```python
 import csv
 from fastelt import FastELT, Source
+from fastelt.destinations import DuckDBDestination
 
 local_data = Source(name="local")
 
@@ -16,9 +17,10 @@ def users():
         for row in csv.DictReader(f):
             yield row
 
-app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
+db = DuckDBDestination()
+app = FastELT(pipeline_name="my_pipeline")
 app.include_source(local_data)
-app.run()
+app.run(destination=db)
 ```
 
 ## Why FastELT?
@@ -38,8 +40,11 @@ app.run()
 
 - **Sources** group related resources with shared config — like FastAPI's `APIRouter`
 - **Resources** are generator functions that `yield` dict records — like dlt resources
+- **Destinations** are typed config objects (DuckDB, BigQuery, custom sinks) — registered with `app.include_destination()`
 - **`@app.source`** registers a single-resource source inline — like `@app.get` in FastAPI
+- **`@app.destination`** registers a custom sink function as a destination
 - **`Env` / `Secret`** resolve environment variables automatically — like FastAPI's `Query()`
+- **`Incremental`** tracks cursors for efficient syncing — like `Annotated[str, Incremental(...)]`
 - **`response_model`** validates records through Pydantic — like FastAPI's `response_model`
 - **RESTAPISource** defines REST APIs declaratively — dlt handles pagination and auth
 - **Filesystem sources** load files from local disk or cloud storage (GCS)

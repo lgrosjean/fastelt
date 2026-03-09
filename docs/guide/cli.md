@@ -29,60 +29,69 @@ fastelt --app my_package.pipelines:my_app run ...
 
 ### `fastelt run`
 
-Run the pipeline — extract from sources, load to destination:
+Run the pipeline — extract from sources, load to a destination:
 
 ```bash
-fastelt run [OPTIONS]
+fastelt run <destination> [source]
 ```
+
+**Arguments:**
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `destination` | Yes | Destination name (must be registered in the app) |
+| `source` | No | Run only this source |
 
 **Options:**
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--destination DEST` | `-d` | dlt destination (duckdb, postgres, bigquery, ...) |
-| `--dataset NAME` | | Dataset/schema name at the destination |
-| `--source NAME` | `-s` | Run only this source |
 | `--resource NAME` | `-r` | Run only these resources (repeatable) |
 | `--app MODULE:ATTR` | | App import path |
 
 **Examples:**
 
 ```bash
-# Run all sources to DuckDB
-fastelt run -d duckdb
+# Run all sources to the registered DuckDB destination
+fastelt run duckdb
 
 # Run only the "github" source
-fastelt run -d duckdb -s github
+fastelt run duckdb github
 
 # Run specific resources
-fastelt run -d duckdb -r repos -r issues
+fastelt run duckdb -r repos -r issues
 ```
 
 ### `fastelt list`
 
-List registered sources and their resources:
+List registered sources, destinations, and their resources:
 
 ```bash
-fastelt list [OPTIONS]
+fastelt list
 ```
 
 **Example output:**
 
 ```
-Source: github (3 resources)
-  - repositories
-  - issues
-  - stargazers
-Source: local (1 resources)
-  - users
+Destinations:
+  - duckdb
+  - bigquery
+
+Sources:
+  github (3 resources)
+    - repositories
+    - issues
+    - stargazers
+  local (1 resources)
+    - users
 ```
 
 ### `fastelt describe`
 
-Show detailed information about a source or resource:
+Show detailed information about a source, resource, or destination:
 
 ```bash
-fastelt describe <name> [OPTIONS]
+fastelt describe <name>
 ```
 
 Use `source_name:resource_name` to describe a specific resource:
@@ -90,6 +99,7 @@ Use `source_name:resource_name` to describe a specific resource:
 ```bash
 fastelt describe github
 fastelt describe github:repositories
+fastelt describe duckdb
 ```
 
 **Example output:**
@@ -107,7 +117,9 @@ Resource: github:repositories
 Given a project with `fastelt_app.py`:
 
 ```python
-from fastelt import FastELT, Source, Env
+from fastelt import FastELT, Source
+from fastelt.config import Env
+from fastelt.destinations import DuckDBDestination
 
 github = Source(name="github", token=Env("GH_TOKEN"))
 
@@ -115,20 +127,22 @@ github = Source(name="github", token=Env("GH_TOKEN"))
 def repos():
     ...
 
-app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
+db = DuckDBDestination()
+app = FastELT(pipeline_name="my_pipeline")
+app.include_destination(db)
 app.include_source(github)
 ```
 
 ```bash
-# List available sources and resources
+# List available sources, destinations, and resources
 fastelt list
 
 # Inspect a resource
 fastelt describe github:repos
 
 # Run the pipeline
-fastelt run
+fastelt run duckdb
 
-# Run to a different destination
-fastelt run -d postgres
+# Run only a specific source
+fastelt run duckdb github
 ```

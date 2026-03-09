@@ -1,7 +1,12 @@
 [project]
 site_name = "FastELT"
 site_description = "A FastAPI-inspired ELT pipeline library"
-site_url = "https://fastelt.dev"
+site_author = "Léo Grosjean"
+site_url = "https://lgrosjean.github.io/fastelt/"
+repo_url = "https://github.com/lgrosjean/fastelt"
+repo_name = "lgrosjean/fastelt"
+docs_dir = "docs"
+font.text = "Inter"
 
 nav = [
   {"Home" = "index.md"},
@@ -11,17 +16,23 @@ nav = [
     {"Quickstart" = "getting-started/quickstart.md"},
   ]},
   {"User Guide" = [
-    {"Extractors" = "guide/extractors.md"},
-    {"Loaders" = "guide/loaders.md"},
     {"Sources" = "guide/sources.md"},
-    {"Built-in Plugins" = "guide/built-in-plugins.md"},
+    {"REST API" = "guide/rest-api.md"},
+    {"Filesystem" = "guide/filesystem.md"},
+    {"Validation" = "guide/validation.md"},
     {"CLI" = "guide/cli.md"},
+  ]},
+  {"Examples" = [
+    {"Custom Source: MLflow" = "examples/custom-source-mlflow.md"},
   ]},
   {"API Reference" = [
     {"FastELT" = "api/app.md"},
-    {"Records" = "api/records.md"},
     {"Source" = "api/source.md"},
+    {"Destination" = "api/destination.md"},
+    {"Config (Env, Secret)" = "api/config.md"},
     {"Types" = "api/types.md"},
+    {"REST API Source" = "api/rest-api-source.md"},
+    {"Filesystem Source" = "api/filesystem-source.md"},
   ]},
 ]
 
@@ -35,10 +46,15 @@ features = [
   "navigation.path",
   "search.highlight",
 ]
+logo = "assets/favicon.svg"
+favicon = "assets/favicon.svg"
 
 [project.theme.palette]
 primary = "teal"
 accent = "amber"
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
 
 [project.markdown_extensions.admonition]
 [project.markdown_extensions.attr_list]
