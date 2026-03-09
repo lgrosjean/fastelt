@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url>
+        <loc>https://fastelt.dev/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/getting-started/why-fastelt/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/getting-started/installation/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/getting-started/quickstart/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/guide/sources/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/guide/cli/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/api/app/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/api/source/</loc>
+      </url>
+      <url>
+        <loc>https://fastelt.dev/api/types/</loc>
+      </url>
+</urlset>
