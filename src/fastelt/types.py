@@ -13,7 +13,7 @@ from __future__ import annotations
 import functools
 import inspect
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, get_args, get_origin
 
@@ -92,6 +92,24 @@ def _validate_record(
     return validated.model_dump(by_alias=False)
 
 
+def _extract_inner_type(annotation: Any) -> type[BaseModel] | None:
+    """Extract BaseModel subclass from return type annotations.
+
+    Handles: list[User], Iterator[User], Generator[User, ...], Iterable[User], bare User.
+    Returns None for non-BaseModel types (list[dict], str, etc.).
+    """
+    origin = get_origin(annotation)
+    if origin in (list, Iterator, Generator, Iterable):
+        args = get_args(annotation)
+        if args:
+            candidate = args[0]
+            if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                return candidate
+    elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
 def _wrap_with_validation(
     gen_func: Callable[..., Any],
     model_cls: type[BaseModel],
@@ -101,12 +119,20 @@ def _wrap_with_validation(
     """Wrap a generator function to validate each yielded record."""
 
     @functools.wraps(gen_func)
-    def wrapper(**kwargs: Any) -> Iterator[dict[str, Any]]:
-        for record in gen_func(**kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        for record in gen_func(*args, **kwargs):
             if isinstance(record, dict):
                 yield _validate_record(record, model_cls, frozen, resource_name)
             else:
                 yield record
+
+    # Preserve __signature__ through the wrapping chain so dlt sees the
+    # correct (stripped) signature instead of following __wrapped__.
+    if hasattr(gen_func, "__signature__"):
+        wrapper.__signature__ = gen_func.__signature__  # type: ignore[attr-defined]
+    # Remove __wrapped__ to prevent dlt/inspect from unwrapping to the original
+    if hasattr(wrapper, "__wrapped__"):
+        del wrapper.__wrapped__
 
     return wrapper
 
@@ -198,6 +224,65 @@ def _resolve_env_params(func: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _resolve_parent_deps(
+    func: Callable[..., Any],
+    type_registry: dict[type[BaseModel], str],
+) -> tuple[Callable[..., Any], str | None]:
+    """Detect parent dependency from BaseModel-typed params.
+
+    If a parameter's type annotation is a BaseModel subclass that exists in the
+    type_registry (i.e., is produced by another resource), wrap the function as
+    a dlt transformer-compatible callable.
+
+    Returns (wrapped_func, parent_resource_name) or (func, None).
+    """
+    sig = inspect.signature(func)
+    # Get evaluated type annotations. inspect.get_annotations may unwrap through
+    # __wrapped__, so we intersect with the current signature's parameters.
+    try:
+        all_hints = inspect.get_annotations(func, eval_str=True)
+    except NameError:
+        all_hints = inspect.get_annotations(func, eval_str=False)
+    hints = {k: v for k, v in all_hints.items() if k in sig.parameters}
+
+    deps: list[tuple[str, type[BaseModel], str]] = []  # (param_name, model_cls, parent_name)
+    for param_name, param in sig.parameters.items():
+        hint = hints.get(param_name)
+        if hint is None:
+            continue
+        if isinstance(hint, type) and issubclass(hint, BaseModel) and not issubclass(hint, Source):
+            if hint in type_registry:
+                deps.append((param_name, hint, type_registry[hint]))
+
+    if not deps:
+        return func, None
+
+    if len(deps) > 1:
+        dep_names = [f"{p}:{m.__name__}" for p, m, _ in deps]
+        raise ValueError(
+            f"Multiple parent dependencies found: {dep_names}. "
+            f"dlt transformers support only one parent."
+        )
+
+    dep_param_name, model_cls, parent_name = deps[0]
+
+    @functools.wraps(func)
+    def wrapper(item: Any, **kwargs: Any) -> Any:
+        validated = model_cls.model_validate(item)
+        kwargs[dep_param_name] = validated
+        yield from func(**kwargs)
+
+    # Replace dep param with `item` positional param (dlt requires first arg for transformers)
+    item_param = inspect.Parameter("item", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    new_params = [item_param] + [
+        p for p in sig.parameters.values() if p.name != dep_param_name
+    ]
+    wrapper.__signature__ = sig.replace(parameters=new_params)  # type: ignore[attr-defined]
+    wrapper.__annotations__ = {k: v for k, v in hints.items() if k != dep_param_name}
+
+    return wrapper, parent_name
+
+
 @dataclass
 class _ResourceMeta:
     """Internal metadata for a registered resource."""
@@ -214,6 +299,7 @@ class _ResourceMeta:
     selected: bool = True
     response_model: type[BaseModel] | None = None
     frozen: bool = False
+    produces_type: type[BaseModel] | None = None
 
 
 class Source(BaseModel):
@@ -251,6 +337,7 @@ class Source(BaseModel):
 
     _resources: dict[str, _ResourceMeta] = PrivateAttr(default_factory=dict)
     _source_name: str | None = PrivateAttr(default=None)
+    _type_registry: dict[type[BaseModel], str] = PrivateAttr(default_factory=dict)
 
     def __init__(self, **kwargs: Any) -> None:
         # Resolve Env values before Pydantic validation
@@ -319,6 +406,31 @@ class Source(BaseModel):
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             key = name or func.__name__
+
+            # Extract return type annotation for auto-detection
+            try:
+                hints = inspect.get_annotations(func, eval_str=True)
+            except NameError:
+                hints = inspect.get_annotations(func, eval_str=False)
+            return_hint = hints.get("return")
+            produces_type = _extract_inner_type(return_hint) if return_hint else None
+
+            # Auto-set response_model from return type if not explicitly provided
+            effective_response_model = response_model
+            if produces_type and response_model is None:
+                effective_response_model = produces_type
+
+            # Register producer type (for parent-child detection)
+            if produces_type is not None:
+                if produces_type in self._type_registry:
+                    existing = self._type_registry[produces_type]
+                    raise ValueError(
+                        f"Multiple resources produce {produces_type.__name__}: "
+                        f"'{existing}' and '{key}'. "
+                        f"Auto-detection requires unambiguous type producers."
+                    )
+                self._type_registry[produces_type] = key
+
             self._resources[key] = _ResourceMeta(
                 func=func,
                 name=key,
@@ -330,8 +442,9 @@ class Source(BaseModel):
                 merge_key=merge_key,
                 table_name=table_name or key,
                 selected=selected,
-                response_model=response_model,
+                response_model=effective_response_model,
                 frozen=frozen,
+                produces_type=produces_type,
             )
             return func
 
@@ -348,44 +461,76 @@ class Source(BaseModel):
         resource_names:
             If provided, only include these resources (selective run).
         """
-        source_instance = self
-        resource_metas = dict(self._resources)
         source_name = self._source_name or type(self).__name__.lower()
 
-        # Build dlt resources from registered functions
-        dlt_resources: list[Any] = []
-        for key, meta in resource_metas.items():
+        # 1. Determine which resources to build
+        selected: dict[str, _ResourceMeta] = {}
+        for key, meta in self._resources.items():
             if resource_names and key not in resource_names:
                 continue
             if not meta.selected and not (resource_names and key in resource_names):
                 continue
+            selected[key] = meta
 
+        # 2. First pass: resolve all functions and detect dependencies
+        prepared: dict[str, tuple[Callable[..., Any], str | None, _ResourceMeta]] = {}
+        for key, meta in selected.items():
             if meta.deprecated:
                 logger.warning("Resource '{}' is deprecated", key)
-
-            # Resolve env params (str annotations + Annotated), then bind source
             bound = _resolve_env_params(meta.func)
             bound = self._bind_source(bound)
-
-            # Wrap with pydantic validation if response_model is set
+            bound, parent_name = _resolve_parent_deps(bound, self._type_registry)
             if meta.response_model is not None:
                 bound = _wrap_with_validation(
                     bound, meta.response_model, meta.frozen, key
                 )
+            prepared[key] = (bound, parent_name, meta)
 
-            # Build dlt.resource kwargs
-            res_kwargs: dict[str, Any] = {
-                "name": meta.table_name or key,
-                "primary_key": meta.primary_key,
-                "write_disposition": meta.write_disposition,
-            }
-            if meta.merge_key:
-                res_kwargs["merge_key"] = meta.merge_key
+        # 3. Auto-include parents not in selection
+        for key, (_, parent_name, _) in list(prepared.items()):
+            if parent_name and parent_name not in prepared:
+                pmeta = self._resources[parent_name]
+                bound = _resolve_env_params(pmeta.func)
+                bound = self._bind_source(bound)
+                bound, _ = _resolve_parent_deps(bound, self._type_registry)
+                if pmeta.response_model is not None:
+                    bound = _wrap_with_validation(
+                        bound, pmeta.response_model, pmeta.frozen, parent_name
+                    )
+                prepared[parent_name] = (bound, None, pmeta)
 
-            dlt_res = dlt.resource(bound, **res_kwargs)
-            dlt_resources.append(dlt_res)
+        # 4. Topological build: roots first, then children
+        built: dict[str, Any] = {}
+        pending = dict(prepared)
+        while pending:
+            progress = False
+            for key in list(pending):
+                bound, parent_name, meta = pending[key]
+                res_kwargs: dict[str, Any] = {
+                    "name": meta.table_name or key,
+                    "primary_key": meta.primary_key,
+                    "write_disposition": meta.write_disposition,
+                }
+                if meta.merge_key:
+                    res_kwargs["merge_key"] = meta.merge_key
 
-        # Create dlt source wrapping these resources
+                if parent_name is None:
+                    built[key] = dlt.resource(bound, **res_kwargs)
+                    del pending[key]
+                    progress = True
+                elif parent_name in built:
+                    built[key] = dlt.transformer(
+                        bound, data_from=built[parent_name], **res_kwargs
+                    )
+                    del pending[key]
+                    progress = True
+            if not progress:
+                raise ValueError(
+                    f"Circular or unresolvable dependencies: {list(pending)}"
+                )
+
+        dlt_resources = list(built.values())
+
         @dlt.source(name=source_name)
         def _make_source() -> Any:
             return dlt_resources
@@ -400,11 +545,13 @@ class Source(BaseModel):
         2. Parameter with no annotation and no default (convention)
         """
         try:
-            hints = inspect.get_annotations(func, eval_str=True)
+            all_hints = inspect.get_annotations(func, eval_str=True)
         except NameError:
             # Annotation references a locally-defined class that can't be resolved
-            hints = inspect.get_annotations(func, eval_str=False)
+            all_hints = inspect.get_annotations(func, eval_str=False)
         sig = inspect.signature(func)
+        # Intersect with current signature to handle wrapped functions
+        hints = {k: v for k, v in all_hints.items() if k in sig.parameters}
 
         source_param: str | None = None
         for param_name, param in sig.parameters.items():
@@ -447,3 +594,33 @@ class Source(BaseModel):
     def get_resource_meta(self, name: str) -> _ResourceMeta:
         """Get metadata for a resource."""
         return self._resources[name]
+
+    def get_children(self, resource_name: str) -> list[str]:
+        """Return resources that depend on this resource's output type."""
+        meta = self._resources[resource_name]
+        if meta.produces_type is None:
+            return []
+        children = []
+        for key, m in self._resources.items():
+            if key == resource_name:
+                continue
+            try:
+                hints = inspect.get_annotations(m.func, eval_str=True)
+            except NameError:
+                hints = inspect.get_annotations(m.func, eval_str=False)
+            sig = inspect.signature(m.func)
+            for param_name in sig.parameters:
+                hint = hints.get(param_name)
+                if hint is meta.produces_type:
+                    children.append(key)
+                    break
+        return children
+
+    def get_resource_tree(self) -> dict[str, list[str]]:
+        """Return {parent: [children]} dependency mapping."""
+        tree: dict[str, list[str]] = {}
+        for key in self._resources:
+            children = self.get_children(key)
+            if children:
+                tree[key] = children
+        return tree

@@ -17,6 +17,7 @@ nav = [
   ]},
   {"User Guide" = [
     {"Sources" = "guide/sources.md"},
+    {"Bigger Applications" = "guide/bigger-applications.md"},
     {"REST API" = "guide/rest-api.md"},
     {"Filesystem" = "guide/filesystem.md"},
     {"Validation" = "guide/validation.md"},
@@ -24,6 +25,7 @@ nav = [
   ]},
   {"Examples" = [
     {"Custom Source: MLflow" = "examples/custom-source-mlflow.md"},
+    {"Parent-Child: GitHub" = "examples/parent-child-github.md"},
   ]},
   {"API Reference" = [
     {"FastELT" = "api/app.md"},

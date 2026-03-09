@@ -34,6 +34,24 @@ Usage::
 """
 
 from fastelt.sources.filesystem import GCSFileSystemSource, LocalFileSystemSource
+from fastelt.sources.rest_api import (
+    APIKeyAuth,
+    AuthConfigBase,
+    BearerTokenAuth,
+    HttpBasicAuth,
+    OAuth2ClientCredentials,
+    RESTAPISource,
+)
 from fastelt.sources.types import Incremental
 
-__all__ = ["GCSFileSystemSource", "Incremental", "LocalFileSystemSource"]
+__all__ = [
+    "APIKeyAuth",
+    "AuthConfigBase",
+    "BearerTokenAuth",
+    "GCSFileSystemSource",
+    "HttpBasicAuth",
+    "Incremental",
+    "LocalFileSystemSource",
+    "OAuth2ClientCredentials",
+    "RESTAPISource",
+]

@@ -12,6 +12,7 @@ import duckdb
 import pytest
 
 from fastelt import FastELT
+from fastelt.destinations import DuckDBDestination
 from fastelt.sources.filesystem import (
     FileResource,
     GCSFileSystemSource,
@@ -42,7 +43,7 @@ def cleanup():
 
 def _app(name: str, **kwargs) -> FastELT:
     PIPELINES.append(name)
-    return FastELT(pipeline_name=name, destination="duckdb", **kwargs)
+    return FastELT(pipeline_name=name, destination=DuckDBDestination(), **kwargs)
 
 
 def _query(pipeline_name: str, sql: str):

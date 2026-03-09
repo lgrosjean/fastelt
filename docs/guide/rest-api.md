@@ -6,12 +6,12 @@ For standard REST APIs, `RESTAPISource` provides a declarative, zero-code extrac
 
 ```python
 from fastelt import Env, FastELT
-from fastelt.rest_api import RESTAPISource
+from fastelt.sources.rest_api import RESTAPISource, BearerTokenAuth
 
 github = RESTAPISource(
     name="github",
     base_url="https://api.github.com",
-    auth={"type": "bearer", "token": Env("GH_TOKEN")},
+    auth=BearerTokenAuth(token=Env("GH_TOKEN")),
     paginator="header_link",
     resources=[
         {
@@ -39,26 +39,32 @@ app.run()
 | `base_url` | `str` | Base URL for all endpoints |
 | `resources` | `list[dict]` | Resource configs (see below) |
 | `headers` | `dict[str, str]` | Default headers for all requests |
-| `auth` | `dict \| str \| None` | Authentication config |
+| `auth` | `AuthConfigBase \| dict \| str \| None` | Authentication config (auth class or dict) |
 | `paginator` | `dict \| str \| None` | Default paginator |
 | `resource_defaults` | `dict \| None` | Defaults applied to all resources |
 
 ## Authentication
 
-Supports dlt auth types:
+Pass dlt auth class instances directly — use `Env()` or `Secret()` for sensitive values:
 
 ```python
+from fastelt.sources.rest_api import BearerTokenAuth, APIKeyAuth, HttpBasicAuth
+
 # Bearer token
-auth={"type": "bearer", "token": Env("GH_TOKEN")}
+auth=BearerTokenAuth(token=Env("GH_TOKEN"))
 
 # API key
-auth={"type": "api_key", "name": "X-API-Key", "api_key": Env("API_KEY")}
+auth=APIKeyAuth(name="X-API-Key", api_key=Env("API_KEY"))
 
 # HTTP Basic
-auth={"type": "http_basic", "username": "user", "password": Env("PASSWORD")}
+auth=HttpBasicAuth(username="user", password=Env("PASSWORD"))
 ```
 
-Use `Env()` or `Secret()` for sensitive values — they resolve at runtime from environment variables.
+Dict configs are also supported for backward compatibility:
+
+```python
+auth={"type": "bearer", "token": Env("GH_TOKEN")}
+```
 
 ## Pagination
 
@@ -104,7 +110,7 @@ Apply defaults to all resources:
 github = RESTAPISource(
     name="github",
     base_url="https://api.github.com",
-    auth={"type": "bearer", "token": Env("GH_TOKEN")},
+    auth=BearerTokenAuth(token=Env("GH_TOKEN")),
     resource_defaults={
         "primary_key": "id",
         "write_disposition": "merge",

@@ -30,6 +30,7 @@ app.run(destination=db)
 | Define pipelines | Python decorators | YAML / JSON config | Python decorators |
 | Config | Source fields + `Env()` | Manual YAML | `dlt.secrets` |
 | Data validation | Pydantic v2 `response_model` | None built-in | Schema inference |
+| Resource chaining | Type annotations (`User` → `Repo`) | Config-based | `dlt.transformer` + manual wiring |
 | Env var management | `Env()` / `Secret()` + auto-resolve | `.env` files | `dlt.secrets` |
 | Destinations | 20+ (via dlt) | 300+ connectors | 20+ |
 | Learning curve | Familiar if you know FastAPI | Tool-specific DSL | dlt-specific API |
@@ -46,6 +47,7 @@ app.run(destination=db)
 - **`Env` / `Secret`** resolve environment variables automatically — like FastAPI's `Query()`
 - **`Incremental`** tracks cursors for efficient syncing — like `Annotated[str, Incremental(...)]`
 - **`response_model`** validates records through Pydantic — like FastAPI's `response_model`
+- **Resource chaining** wires parent-child resources via type annotations — `users → repos → commits`
 - **RESTAPISource** defines REST APIs declaratively — dlt handles pagination and auth
 - **Filesystem sources** load files from local disk or cloud storage (GCS)
 

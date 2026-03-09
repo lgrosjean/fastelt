@@ -12,7 +12,7 @@ import dlt
 from loguru import logger
 from pydantic import BaseModel
 
-from fastelt.destinations import CustomDestination, Destination
+from fastelt.destinations import CustomDestination, Destination, FileSystemDestination
 from fastelt.types import Source
 
 
@@ -39,10 +39,12 @@ class FastELT:
     def __init__(
         self,
         pipeline_name: str = "fastelt",
+        destination: Destination | str | None = None,
     ) -> None:
         self._pipeline_name = pipeline_name
         self._sources: dict[str, Source] = {}
         self._destinations: dict[str, Destination] = {}
+        self._default_destination: Destination | str = destination or FileSystemDestination()
         logger.debug("FastELT app '{}' initialized", pipeline_name)
 
     def source(
@@ -178,7 +180,7 @@ class FastELT:
     def run(
         self,
         *,
-        destination: Destination | str,
+        destination: Destination | str | None = None,
         source: str | None = None,
         resources: list[str] | None = None,
         dataset_name: str | None = None,
@@ -202,9 +204,11 @@ class FastELT:
         **pipeline_kwargs:
             Extra kwargs forwarded to ``dlt.pipeline()``.
         """
-        dest_obj = self._resolve_destination(destination)
+        dest_obj = self._resolve_destination(destination or self._default_destination)
         dest_name = dest_obj.name
         dlt_kwargs = dest_obj._to_dlt_kwargs()
+
+        loader_file_format = dlt_kwargs.pop("loader_file_format", None)
 
         # dataset_name: explicit arg > destination config > default
         ds_name = (
@@ -249,6 +253,8 @@ class FastELT:
             run_kwargs: dict[str, Any] = {}
             if write_disposition:
                 run_kwargs["write_disposition"] = write_disposition
+            if loader_file_format:
+                run_kwargs["loader_file_format"] = loader_file_format
 
             info = pipeline.run(dlt_source, **run_kwargs)
             all_info.append(info)
