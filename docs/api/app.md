@@ -2,76 +2,66 @@
 
 ::: fastelt.app.FastELT
 
-The main application class. Create an instance and register extractors/loaders via decorators.
+The main application class — like `FastAPI()` but for ELT pipelines.
 
 ```python
 from fastelt import FastELT
 
-app = FastELT()
+app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
 ```
+
+## Constructor
+
+```python
+FastELT(
+    pipeline_name: str = "fastelt",
+    *,
+    destination: str | None = None,
+    dataset_name: str | None = None,
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `pipeline_name` | `str` | `"fastelt"` | Name for the dlt pipeline |
+| `destination` | `str \| None` | `None` | Default dlt destination (e.g. `"duckdb"`, `"postgres"`) |
+| `dataset_name` | `str \| None` | `None` | Default dataset/schema name |
 
 ## Methods
 
-### `extractor()`
+### `source()`
 
 ```python
-@app.extractor(
+@app.source(
     name: str | None = None,
     *,
-    description: str | None = None,
-    tags: list[str] | None = None,
-    deprecated: bool = False,
     primary_key: str | list[str] | None = None,
-) -> Callable[[F], F]
+    write_disposition: str = "append",
+    merge_key: str | list[str] | None = None,
+    table_name: str | None = None,
+    response_model: type[BaseModel] | None = None,
+    frozen: bool = False,
+) -> Callable
 ```
 
-Decorator to register an extractor function.
+Decorator to register a single-resource source — like `@app.get` in FastAPI.
 
 **Parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `name` | `str \| None` | function name | Registration key |
-| `description` | `str \| None` | docstring | Human-readable description |
-| `tags` | `list[str] \| None` | `[]` | Categorization tags |
-| `deprecated` | `bool` | `False` | Mark as deprecated |
-| `primary_key` | `str \| list[str] \| None` | `None` | Identity key(s) |
-
-The decorated function must return `Iterator[T]` (streaming) or `list[T]` (batch), where `T` is a `BaseModel` subclass.
-
----
-
-### `loader()`
+| `name` | `str \| None` | function name | Source and resource name |
+| `primary_key` | `str \| list[str] \| None` | `None` | Primary key column(s) |
+| `write_disposition` | `str` | `"append"` | `"append"`, `"replace"`, or `"merge"` |
+| `merge_key` | `str \| list[str] \| None` | `None` | Merge key column(s) |
+| `table_name` | `str \| None` | `None` | Destination table name |
+| `response_model` | `type[BaseModel] \| None` | `None` | Pydantic model for validation |
+| `frozen` | `bool` | `False` | Reject extra columns |
 
 ```python
-@app.loader(
-    name: str | None = None,
-) -> Callable[[F], F]
-```
-
-Decorator to register a loader function.
-
-**Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `name` | `str \| None` | function name | Registration key |
-
-The decorated function may optionally declare a `Records[T]` parameter to receive extracted data.
-
----
-
-### `include()`
-
-```python
-app.include(plugin: PluginGroup) -> None
-```
-
-Include extractors and loaders from a `PluginGroup` (returned by built-in plugin factories).
-
-```python
-from fastelt.extractors.csv import csv_extractor
-app.include(csv_extractor(User))
+@app.source("users", primary_key="id", response_model=UserModel)
+def users():
+    yield {"id": 1, "name": "Alice"}
 ```
 
 ---
@@ -79,10 +69,15 @@ app.include(csv_extractor(User))
 ### `include_source()`
 
 ```python
-app.include_source(source: Source) -> None
+app.include_source(source: Source, name: str | None = None) -> None
 ```
 
-Include all entities from a `Source`.
+Register a source with its resources — like `app.include_router()` in FastAPI.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source` | `Source` | required | A Source instance (or subclass) |
+| `name` | `str \| None` | `None` | Optional name override |
 
 ```python
 app.include_source(github)
@@ -94,68 +89,60 @@ app.include_source(github)
 
 ```python
 app.run(
-    extractor: str,
-    loader: str,
-    extractor_config: dict[str, Any] | None = None,
-    loader_config: dict[str, Any] | None = None,
     *,
-    validate_records: bool = True,
-) -> None
+    source: str | None = None,
+    resources: list[str] | None = None,
+    destination: str | None = None,
+    dataset_name: str | None = None,
+    write_disposition: str | None = None,
+    **pipeline_kwargs,
+) -> Any
 ```
 
-Run a pipeline from the named extractor to the named loader.
-
-**Parameters:**
+Run the pipeline — extract from sources, load to destination via dlt.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `extractor` | `str` | required | Registered extractor name |
-| `loader` | `str` | required | Registered loader name |
-| `extractor_config` | `dict` | `None` | Config values for the extractor |
-| `loader_config` | `dict` | `None` | Config values for the loader |
-| `validate_records` | `bool` | `True` | Validate each record's type |
+| `source` | `str \| None` | `None` | Run only this source |
+| `resources` | `list[str] \| None` | `None` | Run only these resources |
+| `destination` | `str \| None` | `None` | Override destination |
+| `dataset_name` | `str \| None` | `None` | Override dataset name |
+| `write_disposition` | `str \| None` | `None` | Override write disposition |
+| `**pipeline_kwargs` | | | Extra kwargs forwarded to `dlt.pipeline()` |
 
 **Raises:**
 
-- `KeyError` — if extractor or loader name is not registered
-- `ValidationError` — if config values fail Pydantic validation
+- `ValueError` — if no destination is specified
+- `KeyError` — if source name is not registered
 
 ---
 
-### `list_extractors()`
+### `list_sources()`
 
 ```python
-app.list_extractors() -> list[str]
+app.list_sources() -> list[str]
 ```
 
-Returns the names of all registered extractors.
+Returns the names of all registered sources.
 
 ---
 
-### `list_loaders()`
+### `list_resources()`
 
 ```python
-app.list_loaders() -> list[str]
+app.list_resources(source: str | None = None) -> dict[str, list[str]]
 ```
 
-Returns the names of all registered loaders.
+Returns resources grouped by source name.
 
 ---
 
-### `get_extractor()`
+### `get_source()`
 
 ```python
-app.get_extractor(name: str) -> ExtractorRegistration
+app.get_source(name: str) -> Source
 ```
 
-Returns the `ExtractorRegistration` for the given name.
+Returns the registered `Source` instance by name.
 
----
-
-### `get_loader()`
-
-```python
-app.get_loader(name: str) -> LoaderRegistration
-```
-
-Returns the `LoaderRegistration` for the given name.
+**Raises:** `KeyError` if not found.

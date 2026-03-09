@@ -1,67 +1,48 @@
-"""Example: custom extractor and loader using @decorators.
+"""Example: Custom resource with dlt incremental loading.
 
-Demonstrates both styles:
-- A loader WITH Records[T] injection (json_users)
-- A loader WITHOUT Records (log_done) — just receives config
+Demonstrates:
+- Source with closure-based config access
+- dlt.sources.incremental for cursor tracking
+- merge write disposition for upserts
 """
 
-import csv
-import json
-from typing import Iterator
+from collections.abc import Iterator
 
-from pydantic import BaseModel, Field
+import dlt
 
-from fastelt import FastELT, Records
+from fastelt import FastELT, Source
 
-app = FastELT()
-
-
-class User(BaseModel):
-    name: str
-    email: str
-    age: int
-    city: str
+# --- Source with config ---
+api = Source(name="myapi", base_url="https://api.example.com")
 
 
-@app.extractor("csv_users")
-def extract_users(
-    path: str = Field(..., description="Path to CSV file"),
-    delimiter: str = Field(default=",", description="CSV delimiter"),
-) -> Iterator[User]:
-    with open(path) as f:
-        for row in csv.DictReader(f, delimiter=delimiter):
-            yield User(**row)
+@api.resource(primary_key="id", write_disposition="merge")
+def events(
+    updated_at=dlt.sources.incremental("updated_at", initial_value="2024-01-01"),
+) -> Iterator[dict]:
+    """Fetch events, incrementally by updated_at."""
+    # In real life, use updated_at.last_value to filter API calls
+    print(f"Fetching events since {updated_at.last_value}")
+    yield {"id": 1, "name": "signup", "updated_at": "2024-06-15T10:00:00"}
+    yield {"id": 2, "name": "purchase", "updated_at": "2024-07-20T14:30:00"}
 
 
-@app.loader("json_users")
-def load_users(
-    records: Records[User],
-    path: str = Field(..., description="Output JSON file path"),
-    indent: int = Field(default=2, description="JSON indentation"),
-) -> None:
-    with open(path, "w") as f:
-        json.dump([r.model_dump() for r in records], f, indent=indent)
+@api.resource(primary_key="id", write_disposition="append")
+def logs() -> Iterator[dict]:
+    """Append-only log stream."""
+    yield {"id": 100, "level": "info", "message": "Server started"}
+    yield {"id": 101, "level": "error", "message": "Connection timeout"}
 
 
-@app.loader("log_done")
-def log_done(message: str = Field(default="Pipeline finished")) -> None:
-    print(message)
-
+# --- App ---
+app = FastELT(pipeline_name="custom_pipeline", destination="duckdb")
+app.include_source(api)
 
 if __name__ == "__main__":
-    # With Records injection
-    app.run(
-        extractor="csv_users",
-        loader="json_users",
-        extractor_config={"path": "example/users.csv"},
-        loader_config={"path": "example/users.json"},
-    )
-    print("Done! Written to example/users.json")
+    # Run all resources
+    info = app.run()
+    print(f"Pipeline completed: {info}")
 
-    # Without Records — loader just runs with its config
-    app.run(
-        extractor="csv_users",
-        loader="log_done",
-        extractor_config={"path": "example/users.csv"},
-        loader_config={"message": "CSV pipeline completed!"},
-    )
+    # Run again — incremental will track cursor
+    info = app.run()
+    print(f"Second run: {info}")

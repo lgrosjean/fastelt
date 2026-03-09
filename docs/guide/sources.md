@@ -1,164 +1,254 @@
-# Sources
+# Sources & Resources
 
-Sources group related extractors with shared configuration — like FastAPI's `APIRouter`.
+Sources group related resources with shared configuration — like FastAPI's `APIRouter`.
 
 ## Why Sources?
 
-When extracting from the same system (e.g., GitHub, a database, an API), multiple extractors share the same connection details. A `Source` lets you define them once:
+When extracting from the same system (e.g., GitHub API, a database), multiple resources share the same connection details. A `Source` lets you define them once:
 
 ```python
-from fastelt import FastELT, Source
+from fastelt import Source, Env
 
 github = Source(
+    name="github",
     base_url="https://api.github.com",
-    token="ghp_...",
+    token=Env("GH_TOKEN"),
     org="anthropics",
 )
 ```
 
-## Registering entities
+## Registering resources
 
-Use `@source.entity()` to register extractors on a source:
+Use `@source.resource()` to register generator functions that yield dict records:
 
 ```python
-from pydantic import BaseModel, Field
-from typing import Iterator
+import dlt
+import httpx
 
-class Repository(BaseModel):
-    name: str
-    stars: int
-
-@github.entity()
-def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
-    # Access source config via closure — just use `github` from scope
-    import requests
-    resp = requests.get(
+@github.resource(primary_key="id", write_disposition="merge")
+def repositories(
+    updated_at=dlt.sources.incremental("updated_at", initial_value="2020-01-01"),
+):
+    headers = {"Authorization": f"Bearer {github.token}"}
+    resp = httpx.get(
         f"{github.base_url}/orgs/{github.org}/repos",
-        headers={"Authorization": f"Bearer {github.token}"},
+        headers=headers,
     )
-    for repo in resp.json():
-        if repo["stargazers_count"] >= min_stars:
-            yield Repository(name=repo["name"], stars=repo["stargazers_count"])
+    yield from resp.json()
 ```
 
 Then include the source in your app:
 
 ```python
-app = FastELT()
-app.include_source(github)
+from fastelt import FastELT
 
-app.run(
-    extractor="repositories",
-    loader="console",
-    extractor_config={"min_stars": 1000},
-)
+app = FastELT(pipeline_name="github_pipeline", destination="duckdb")
+app.include_source(github)
+app.run()
 ```
 
-## Entity metadata
-
-Entities support the same metadata as `@app.extractor()`:
+## Resource decorator parameters
 
 ```python
-@github.entity(
-    description="Fetch repositories from a GitHub org",
-    tags=["core", "github"],
-    primary_key="name",
+@source.resource(
+    name="repos",              # Override function name (default: function name)
+    description="Fetch repos", # Human-readable description (default: docstring)
+    tags=["core", "github"],   # Categorization tags
+    deprecated=False,          # Emit warning at runtime
+    primary_key="id",          # Column(s) for primary key
+    write_disposition="merge", # "append", "replace", or "merge"
+    merge_key="updated_at",    # Column(s) for merge matching
+    table_name="repositories", # Destination table name (default: resource name)
+    selected=True,             # Whether this runs by default
+    response_model=RepoModel,  # Pydantic model for validation
+    frozen=False,              # Reject extra columns (requires response_model)
 )
-def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
-    ...
-
-@github.entity(
-    description="Fetch pull requests for a repository",
-    tags=["core", "github"],
-    deprecated=True,
-    primary_key=["repo", "title"],
-)
-def pull_requests(repo: str = Field(...)) -> Iterator[PullRequest]:
+def repos():
     ...
 ```
+
+## `@app.source` — quick inline
+
+For single-resource sources, use `@app.source` to skip creating a `Source` object:
+
+```python
+app = FastELT(pipeline_name="demo", destination="duckdb")
+
+@app.source("users", primary_key="id", write_disposition="replace")
+def users():
+    yield {"id": 1, "name": "Alice"}
+    yield {"id": 2, "name": "Bob"}
+
+app.run()
+```
+
+This creates a `Source` behind the scenes and registers the function as its single resource.
 
 ## Creating Sources
 
 ### Programmatic (simple)
 
-For straightforward config, just pass keyword arguments — types are inferred from values:
+Pass keyword arguments — a typed Pydantic subclass is created dynamically:
 
 ```python
 github = Source(
+    name="github",
     base_url="https://api.github.com",
-    token="ghp_...",
+    token=Env("GH_TOKEN"),
     org="anthropics",
 )
 ```
 
 ### Class-based (advanced)
 
-For complex schemas with validators, descriptions, or defaults:
+For complex schemas with validators, descriptions, or type constraints:
 
 ```python
 from pydantic import field_validator
 
-class MlflowSource(Source):
-    tracking_uri: str
-    token: str = ""
-    experiment_prefix: str = ""
+class GitHubSource(Source):
+    base_url: str = "https://api.github.com"
+    token: str
+    org: str
 
-    @field_validator("tracking_uri")
+    @field_validator("base_url")
     @classmethod
     def must_be_url(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://")):
-            raise ValueError("tracking_uri must be a URL")
+        if not v.startswith("https://"):
+            raise ValueError("base_url must use HTTPS")
         return v
 
-mlflow = MlflowSource(tracking_uri="http://localhost:5000")
+github = GitHubSource(token="ghp_...", org="anthropics")
+```
+
+Since `Source` extends `BaseModel`, you get full Pydantic v2 features: validators, serialization, JSON schema, etc.
+
+## Environment variables
+
+### `Env` — lazy env var reference
+
+```python
+from fastelt import Env, Source
+
+# Resolved at Source construction time
+github = Source(name="github", token=Env("GH_TOKEN"))
+
+# With default value
+github = Source(name="github", token=Env("GH_TOKEN", default="fallback"))
+```
+
+### `Secret` — masked in logs
+
+```python
+from fastelt import Secret, Source
+
+github = Source(name="github", token=Secret("GH_TOKEN"))
+# repr: Source(name='github', token=Secret('GH_TOKEN'))
+```
+
+### `Annotated` type hints on resource functions
+
+```python
+from typing import Annotated
+from fastelt import Env, Secret
+
+@source.resource()
+def repos(token: Annotated[str, Secret("GH_TOKEN")]):
+    ...
+```
+
+### Auto-resolution from plain `str` params
+
+Any `str`-typed parameter auto-resolves from the uppercased env var name:
+
+```python
+@source.resource()
+def repos(gh_token: str):  # resolves from GH_TOKEN
+    ...
+
+@source.resource()
+def repos(gh_token: str = "fallback"):  # tries GH_TOKEN, falls back to "fallback"
+    ...
 ```
 
 ## Source injection
 
-Entities access the source config through Python closures — just reference the source variable from the enclosing scope. No special injection needed:
+Resources access source config through Python closures — just reference the source variable:
 
 ```python
-github = Source(base_url="https://api.github.com", token="ghp_...")
+github = Source(name="github", base_url="https://api.github.com", token=Env("GH_TOKEN"))
 
-@github.entity()
-def repos() -> Iterator[Repository]:
-    # Just use `github` — it's a regular Python closure
-    print(github.base_url)  # "https://api.github.com"
-    ...
+@github.resource()
+def repos():
+    headers = {"Authorization": f"Bearer {github.token}"}
+    resp = httpx.get(f"{github.base_url}/repos", headers=headers)
+    yield from resp.json()
 ```
 
-Alternatively, the source can be injected as a function parameter (detected by type annotation or by convention for unannotated params with no default):
+Alternatively, declare the source as a function parameter (detected by type annotation or convention):
 
 ```python
 # Explicit type annotation
-@github.entity()
-def repos(source: MlflowSource, limit: int = Field(default=10)) -> Iterator[Repo]:
-    print(source.tracking_uri)
+@github.resource()
+def repos(source: GitHubSource):
+    print(source.base_url)
     ...
 
 # Convention: unannotated param with no default
-@github.entity()
-def repos(src, limit: int = Field(default=10)) -> Iterator[Repo]:
+@github.resource()
+def repos(src):
     print(src.base_url)
     ...
 ```
 
-!!! tip "Prefer closures"
-    The closure pattern is simpler and more Pythonic. Use parameter injection only when you need the source to be explicit in the function signature.
+## Multiple resources
 
-## Multiple entities
-
-A single source can have multiple entities:
+A single source can have multiple resources:
 
 ```python
-@github.entity()
-def repositories(...) -> Iterator[Repository]: ...
+@github.resource(primary_key="id", write_disposition="merge")
+def repositories():
+    ...
 
-@github.entity()
-def pull_requests(...) -> Iterator[PullRequest]: ...
+@github.resource(primary_key="id", write_disposition="append")
+def issues():
+    ...
 
-@github.entity()
-def issues(...) -> Iterator[Issue]: ...
+@github.resource(primary_key="id", write_disposition="replace")
+def stargazers():
+    ...
 
 app.include_source(github)  # registers all three
 ```
+
+## Selective runs
+
+Run specific sources or resources:
+
+```python
+# Run only the "github" source
+app.run(source="github")
+
+# Run only specific resources
+app.run(resources=["repositories", "issues"])
+
+# Both
+app.run(source="github", resources=["repositories"])
+```
+
+## Incremental loading
+
+Use dlt's incremental cursors for efficient syncing:
+
+```python
+import dlt
+
+@api.resource(primary_key="id", write_disposition="merge")
+def events(
+    updated_at=dlt.sources.incremental("updated_at", initial_value="2024-01-01"),
+):
+    print(f"Fetching events since {updated_at.last_value}")
+    yield {"id": 1, "name": "signup", "updated_at": "2024-06-15T10:00:00"}
+```
+
+On subsequent runs, `updated_at.last_value` reflects the last seen cursor value — dlt tracks this automatically.

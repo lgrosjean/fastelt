@@ -1,66 +1,53 @@
 # FastELT
 
-**A FastAPI-inspired ELT pipeline library.**
+**A FastAPI-inspired wrapper around [dlt](https://dlthub.com/) for ELT pipelines.**
 
-FastELT brings FastAPI's developer experience to data pipelines: decorators, type inference, Pydantic v2 validation, and automatic config generation — all in a lightweight Python package.
+Like FastAPI wraps Starlette, FastELT wraps dlt with decorator-driven DX. You get dlt's battle-tested engine (20+ destinations, incremental loading, schema evolution, merge strategies) with FastAPI's developer experience.
 
 ```python
-from fastelt import FastELT
-from pydantic import BaseModel, Field
-from typing import Iterator
+import csv
+from fastelt import FastELT, Source
 
-app = FastELT()
+local_data = Source(name="local")
 
-class User(BaseModel):
-    name: str
-    email: str
-    age: int
+@local_data.resource(primary_key="name", write_disposition="replace")
+def users():
+    with open("users.csv") as f:
+        for row in csv.DictReader(f):
+            yield row
 
-@app.extractor()
-def csv_users(path: str = Field(...), delimiter: str = Field(default=",")) -> Iterator[User]:
-    import csv
-    with open(path) as f:
-        for row in csv.DictReader(f, delimiter=delimiter):
-            yield User(**row)
-
-@app.loader()
-def json_file(records: Records[User], path: str = Field(...)) -> None:
-    import json
-    with open(path, "w") as f:
-        json.dump([r.model_dump() for r in records], f)
-
-app.run(
-    extractor="csv_users",
-    loader="json_file",
-    extractor_config={"path": "users.csv"},
-    loader_config={"path": "output.json"},
-)
+app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
+app.include_source(local_data)
+app.run()
 ```
 
 ## Why FastELT?
 
-| Feature | FastELT | Meltano / Singer | dlt |
-|---------|---------|-------------------|-----|
+| Feature | FastELT | Meltano / Singer | dlt (raw) |
+|---------|---------|-------------------|-----------|
 | Define pipelines | Python decorators | YAML / JSON config | Python decorators |
-| Config schema | Inferred from signature | Manual definition | Manual / partial |
-| Data validation | Pydantic v2 (rust-powered) | None built-in | Schema inference |
-| Dependencies | 2 (`pydantic`, `loguru`) | 10+ | 5+ |
+| Config | Source fields + `Env()` | Manual YAML | `dlt.secrets` |
+| Data validation | Pydantic v2 `response_model` | None built-in | Schema inference |
+| Env var management | `Env()` / `Secret()` + auto-resolve | `.env` files | `dlt.secrets` |
+| Destinations | 20+ (via dlt) | 300+ connectors | 20+ |
 | Learning curve | Familiar if you know FastAPI | Tool-specific DSL | dlt-specific API |
-| Extensibility | Plain Python functions | Plugin systems | Decorators + config |
 
 [See the full comparison](getting-started/why-fastelt.md){ .md-button }
 
 ## Key Concepts
 
-- **Extractors** produce records — generator functions that `yield` Pydantic models
-- **Loaders** consume records — functions that receive a `Records[T]` container
-- **Sources** group extractors with shared config — like FastAPI's `APIRouter`
-- **Built-in plugins** for CSV, JSON, and Parquet — include them with one line
+- **Sources** group related resources with shared config — like FastAPI's `APIRouter`
+- **Resources** are generator functions that `yield` dict records — like dlt resources
+- **`@app.source`** registers a single-resource source inline — like `@app.get` in FastAPI
+- **`Env` / `Secret`** resolve environment variables automatically — like FastAPI's `Query()`
+- **`response_model`** validates records through Pydantic — like FastAPI's `response_model`
+- **RESTAPISource** defines REST APIs declaratively — dlt handles pagination and auth
+- **Filesystem sources** load files from local disk or cloud storage (GCS)
 
 ## Quick Links
 
 - [Why FastELT?](getting-started/why-fastelt.md) — how it compares to Meltano, Singer, and dlt
 - [Installation](getting-started/installation.md) — get up and running
 - [Quickstart](getting-started/quickstart.md) — build your first pipeline in 5 minutes
-- [User Guide](guide/extractors.md) — learn the core concepts
+- [User Guide](guide/sources.md) — learn the core concepts
 - [API Reference](api/app.md) — detailed API documentation

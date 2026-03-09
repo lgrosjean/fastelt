@@ -1,10 +1,28 @@
-import collections.abc
+"""Internal utilities for fastELT."""
+
+from __future__ import annotations
+
 import inspect
-from typing import Any, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel, create_model
 
-from fastelt.types import Records
+
+def resolve_env_values(obj: Any) -> Any:
+    """Recursively resolve :class:`~fastelt.types.Env` instances in nested structures.
+
+    Works on dicts, lists, and scalar values.  Non-Env values are returned as-is.
+    """
+    # Import here to avoid circular import (types.py imports nothing from _utils)
+    from fastelt.types import Env
+
+    if isinstance(obj, Env):
+        return obj.resolve()
+    if isinstance(obj, dict):
+        return {k: resolve_env_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [resolve_env_values(v) for v in obj]
+    return obj
 
 
 def build_config_model(fn: Any, *, exclude: set[str] | None = None) -> type[BaseModel]:
@@ -26,51 +44,3 @@ def build_config_model(fn: Any, *, exclude: set[str] | None = None) -> type[Base
         fields[name] = (annotation, default)
 
     return create_model(f"{fn.__name__}_Config", **fields)
-
-
-def get_record_type(fn: Any) -> type[BaseModel]:
-    """Extract T from Iterator[T] (stream) or list[T] (batch) return annotation."""
-    hints = inspect.get_annotations(fn, eval_str=True)
-    ret = hints.get("return")
-    if ret is None:
-        raise TypeError(f"Function {fn.__name__} must have a return type annotation")
-
-    origin = get_origin(ret)
-    if origin in (collections.abc.Iterator, list):
-        args = get_args(ret)
-        if args and _is_basemodel_subclass(args[0]):
-            return args[0]
-
-    raise TypeError(
-        f"Function {fn.__name__} must return Iterator[T] or list[T] "
-        f"where T is a BaseModel subclass, got {ret}"
-    )
-
-
-def get_records_param(fn: Any) -> tuple[str, type[BaseModel]] | None:
-    """Find a parameter typed as Records[T] (for loaders).
-
-    Returns (param_name, record_type) or None if the loader doesn't
-    request records injection.
-    """
-    hints = inspect.get_annotations(fn, eval_str=True)
-    sig = inspect.signature(fn)
-
-    for name in sig.parameters:
-        hint = hints.get(name)
-        if hint is None:
-            continue
-        origin = get_origin(hint)
-        if origin is Records:
-            args = get_args(hint)
-            if args and _is_basemodel_subclass(args[0]):
-                return (name, args[0])
-
-    return None
-
-
-def _is_basemodel_subclass(tp: Any) -> bool:
-    try:
-        return isinstance(tp, type) and issubclass(tp, BaseModel)
-    except TypeError:
-        return False

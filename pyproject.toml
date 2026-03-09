@@ -1,17 +1,21 @@
 [project]
 name = "fastelt"
-version = "0.1.0"
-description = "A FastAPI-inspired ELT pipeline library"
-requires-python = ">=3.12"
+version = "0.2.0"
+description = "A FastAPI-inspired wrapper around dlt for ELT pipelines"
+requires-python = ">=3.9"
 dependencies = [
+    "dlt[duckdb]>=1.0",
     "pydantic>=2.0",
     "loguru>=0.7",
 ]
 
 [project.optional-dependencies]
 cli = ["typer>=0.9"]
+rest_api = ["dlt[rest_api]>=1.0"]
+filesystem = ["dlt[filesystem]>=1.0"]
+gcs = ["dlt[filesystem]>=1.0", "gcsfs"]
 parquet = ["pyarrow"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "duckdb"]
 docs = ["zensical"]
 
 [project.scripts]

@@ -29,74 +29,77 @@ fastelt --app my_package.pipelines:my_app run ...
 
 ### `fastelt run`
 
-Run a pipeline from an extractor to a loader:
+Run the pipeline — extract from sources, load to destination:
 
 ```bash
-fastelt run <extractor> <loader> [OPTIONS]
+fastelt run [OPTIONS]
 ```
 
 **Options:**
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--extractor-config KEY=VALUE` | `-e` | Extractor config (repeatable) |
-| `--loader-config KEY=VALUE` | `-l` | Loader config (repeatable) |
+| `--destination DEST` | `-d` | dlt destination (duckdb, postgres, bigquery, ...) |
+| `--dataset NAME` | | Dataset/schema name at the destination |
+| `--source NAME` | `-s` | Run only this source |
+| `--resource NAME` | `-r` | Run only these resources (repeatable) |
 | `--app MODULE:ATTR` | | App import path |
 
-**Example:**
+**Examples:**
 
 ```bash
-fastelt run csv_users json_file \
-    -e path=users.csv \
-    -e delimiter=, \
-    -l path=output.json
+# Run all sources to DuckDB
+fastelt run -d duckdb
+
+# Run only the "github" source
+fastelt run -d duckdb -s github
+
+# Run specific resources
+fastelt run -d duckdb -r repos -r issues
 ```
 
 ### `fastelt list`
 
-List all registered extractors and loaders:
+List registered sources and their resources:
 
 ```bash
 fastelt list [OPTIONS]
 ```
 
-**Options:**
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--tag TAG` | `-t` | Filter extractors by tag |
-| `--app MODULE:ATTR` | | App import path |
-
 **Example output:**
 
 ```
-Extractors:
-  - repositories [core, github]
-  - pull_requests [core, github]
-  - legacy_users (deprecated) [users]
-Loaders:
-  - json_file
-  - console
+Source: github (3 resources)
+  - repositories
+  - issues
+  - stargazers
+Source: local (1 resources)
+  - users
 ```
 
 ### `fastelt describe`
 
-Show detailed information about a component:
+Show detailed information about a source or resource:
 
 ```bash
 fastelt describe <name> [OPTIONS]
 ```
 
+Use `source_name:resource_name` to describe a specific resource:
+
+```bash
+fastelt describe github
+fastelt describe github:repositories
+```
+
 **Example output:**
 
 ```
-Extractor: repositories
-Description: Fetch repositories from a GitHub org
-Tags: core, github
-Record type: Repository
-Primary key: name
-Config schema:
-  min_stars: integer - Minimum star count
+Resource: github:repositories
+  Description: Fetch repositories from GitHub
+  Tags: core, github
+  Write disposition: merge
+  Primary key: id
 ```
 
 ## Example workflow
@@ -104,28 +107,28 @@ Config schema:
 Given a project with `fastelt_app.py`:
 
 ```python
-from fastelt import FastELT, Source
-from fastelt.extractors.csv import csv_extractor
-from fastelt.loaders.json import json_loader
-from pydantic import BaseModel
+from fastelt import FastELT, Source, Env
 
-class User(BaseModel):
-    name: str
-    email: str
-    age: int
+github = Source(name="github", token=Env("GH_TOKEN"))
 
-app = FastELT()
-app.include(csv_extractor(User))
-app.include(json_loader(User))
+@github.resource(primary_key="id", write_disposition="merge")
+def repos():
+    ...
+
+app = FastELT(pipeline_name="my_pipeline", destination="duckdb")
+app.include_source(github)
 ```
 
 ```bash
-# List available components
+# List available sources and resources
 fastelt list
 
-# Inspect config for CSV extractor
-fastelt describe csv
+# Inspect a resource
+fastelt describe github:repos
 
-# Run a pipeline
-fastelt run csv json -e path=users.csv -l path=output.json
+# Run the pipeline
+fastelt run
+
+# Run to a different destination
+fastelt run -d postgres
 ```

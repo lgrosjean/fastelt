@@ -1,121 +1,69 @@
-"""Example: Source-based pipeline — like FastAPI's APIRouter.
+"""Example: Custom Source with @resource decorators + dlt incremental.
 
-A GitHub source with shared config (base_url, token), exposing
-multiple entities (repositories, pull_requests) that get the
-source injected automatically.
+For APIs that need custom extraction logic (pagination, transformation,
+business logic), use Source + @resource decorators.
+
+For standard REST APIs, use RESTAPISource instead (see github_rest_api.py).
+
+Requires: pip install httpx
+Usage:    GH_TOKEN=ghp_... python example/source_pipeline.py
 """
 
-import json
 from collections.abc import Iterator
 
-from pydantic import BaseModel, Field
+import dlt
+import httpx
 
-from fastelt import FastELT, Records, Source
+from fastelt import Env, FastELT, Source
 
-# --- Shared source config (no class needed) ---
+# --- Custom source with shared config ---
 
 github = Source(
+    name="github",
     base_url="https://api.github.com",
-    token="ghp_fake_token",
+    token=Env("GH_TOKEN"),
     org="anthropics",
 )
 
 
-# --- Record schemas ---
-
-
-class Repository(BaseModel):
-    name: str
-    stars: int
-    language: str
-
-
-class PullRequest(BaseModel):
-    repo: str
-    title: str
-    author: str
-    status: str
-
-
-# --- Entities: just use `github` from scope, like any Python closure ---
-
-
-@github.entity(
-    description="Fetch repositories from a GitHub org",
-    tags=["core", "github"],
-    primary_key="name",
+@github.resource(
+    primary_key="id",
+    write_disposition="merge",
+    description="Fetch repositories with custom star filtering",
 )
-def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
-    # In real code: requests.get(f"{github.base_url}/orgs/{github.org}/repos", headers=...)
-    fake_data = [
-        Repository(name="claude-code", stars=12000, language="TypeScript"),
-        Repository(name="anthropic-sdk-python", stars=3400, language="Python"),
-        Repository(name="courses", stars=800, language="Jupyter Notebook"),
-    ]
-    for repo in fake_data:
-        if repo.stars >= min_stars:
-            yield repo
-
-
-@github.entity(
-    description="Fetch pull requests for a repository",
-    tags=["core", "github"],
-    primary_key=["repo", "title"],
-)
-def pull_requests(
-    repo: str = Field(...), state: str = Field(default="open")
-) -> Iterator[PullRequest]:
-    # In real code: requests.get(f"{github.base_url}/repos/{github.org}/{repo}/pulls", ...)
-    fake_data = [
-        PullRequest(
-            repo=repo, title="Add streaming support", author="alice", status="open"
-        ),
-        PullRequest(
-            repo=repo, title="Fix typo in README", author="bob", status="merged"
-        ),
-    ]
-    for pr in fake_data:
-        if state == "all" or pr.status == state:
-            yield pr
+def repositories(
+    updated_at=dlt.sources.incremental("updated_at", initial_value="2020-01-01"),
+    min_stars: int = 0,
+) -> Iterator[dict]:
+    """Custom logic: filter by star count (not possible with RESTAPISource)."""
+    headers = {"Authorization": f"Bearer {github.token}"}
+    url = f"{github.base_url}/orgs/{github.org}/repos"
+    page = 1
+    while True:
+        resp = httpx.get(
+            url,
+            headers=headers,
+            params={"per_page": 100, "page": page, "sort": "updated"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            break
+        for item in data:
+            if item.get("stargazers_count", 0) >= min_stars:
+                yield item
+        page += 1
 
 
 # --- App ---
 
-app = FastELT()
+app = FastELT(
+    pipeline_name="github_custom",
+    destination="duckdb",
+    dataset_name="raw_github",
+)
 app.include_source(github)
 
-
-@app.loader()
-def json_file(records: Records[BaseModel], path: str = Field(...)) -> None:
-    with open(path, "w") as f:
-        json.dump([r.model_dump() for r in records], f, indent=2)
-
-
-@app.loader()
-def console(records: Records[BaseModel]) -> None:
-    for r in records:
-        print(f"  {r.model_dump()}")
-
-
 if __name__ == "__main__":
-    print("=== Repositories (min 1000 stars) ===")
-    app.run(
-        extractor="repositories",
-        loader="console",
-        extractor_config={"min_stars": 1000},
-    )
-
-    print("\n=== All pull requests for claude-code ===")
-    app.run(
-        extractor="pull_requests",
-        loader="console",
-        extractor_config={"repo": "claude-code", "state": "all"},
-    )
-
-    print("\n=== Dump repos to JSON ===")
-    app.run(
-        extractor="repositories",
-        loader="json_file",
-        loader_config={"path": "example/repos.json"},
-    )
-    print("Written to example/repos.json")
+    info = app.run()
+    print(f"Pipeline completed: {info}")

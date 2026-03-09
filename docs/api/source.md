@@ -2,7 +2,7 @@
 
 ::: fastelt.types.Source
 
-Shared configuration for a group of related extractors — like FastAPI's `APIRouter`.
+Shared configuration for a group of related resources — like FastAPI's `APIRouter`.
 
 ```python
 from fastelt import Source
@@ -16,79 +16,102 @@ Types are inferred from the values you pass:
 
 ```python
 github = Source(
+    name="github",
     base_url="https://api.github.com",
-    token="ghp_...",
+    token=Env("GH_TOKEN"),
     org="anthropics",
 )
 ```
 
 ### Class-based
 
-For complex schemas with validators, descriptions, or type constraints:
+For complex schemas with validators or type constraints:
 
 ```python
-class MlflowSource(Source):
-    tracking_uri: str
-    token: str = ""
+class GitHubSource(Source):
+    base_url: str = "https://api.github.com"
+    token: str
+    org: str
 
-mlflow = MlflowSource(tracking_uri="http://localhost:5000")
+github = GitHubSource(token="ghp_...", org="anthropics")
 ```
 
-Since `Source` extends `BaseModel`, you get full Pydantic v2 features: validators, serialization, JSON schema, etc.
+Since `Source` extends `BaseModel`, you get full Pydantic v2 features.
 
 ## Methods
 
-### `entity()`
+### `resource()`
 
 ```python
-@source.entity(
+@source.resource(
     name: str | None = None,
     *,
     description: str | None = None,
     tags: list[str] | None = None,
     deprecated: bool = False,
     primary_key: str | list[str] | None = None,
+    write_disposition: str = "append",
+    merge_key: str | list[str] | None = None,
+    table_name: str | None = None,
+    selected: bool = True,
+    response_model: type[BaseModel] | None = None,
+    frozen: bool = False,
 ) -> Callable
 ```
 
-Decorator to register an entity extractor on this source.
+Decorator to register a resource on this source.
 
 **Parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `name` | `str \| None` | function name | Registration key |
+| `name` | `str \| None` | function name | Resource name |
 | `description` | `str \| None` | docstring | Human-readable description |
 | `tags` | `list[str] \| None` | `[]` | Categorization tags |
-| `deprecated` | `bool` | `False` | Mark as deprecated |
-| `primary_key` | `str \| list[str] \| None` | `None` | Identity key(s) |
+| `deprecated` | `bool` | `False` | Emit warning at runtime |
+| `primary_key` | `str \| list[str] \| None` | `None` | Primary key column(s) |
+| `write_disposition` | `str` | `"append"` | `"append"`, `"replace"`, or `"merge"` |
+| `merge_key` | `str \| list[str] \| None` | `None` | Merge key column(s) |
+| `table_name` | `str \| None` | resource name | Destination table name |
+| `selected` | `bool` | `True` | Whether this runs by default |
+| `response_model` | `type[BaseModel] \| None` | `None` | Pydantic model for validation |
+| `frozen` | `bool` | `False` | Reject extra columns (requires `response_model`) |
 
 ```python
-@github.entity(
+@github.resource(
+    primary_key="id",
+    write_disposition="merge",
     description="Fetch repositories",
-    tags=["core"],
-    primary_key="name",
+    response_model=RepoModel,
 )
-def repositories(min_stars: int = Field(default=0)) -> Iterator[Repository]:
+def repositories():
     ...
 ```
 
-## Including in an app
+---
+
+### `list_resources()`
 
 ```python
-app = FastELT()
-app.include_source(github)  # registers all entities as extractors
+source.list_resources() -> list[str]
 ```
 
-## Accessing source config
+Returns the names of all registered resources.
 
-Entities access the source via Python closure:
+---
+
+### `get_resource_meta()`
 
 ```python
-github = Source(base_url="https://api.github.com", token="ghp_...")
-
-@github.entity()
-def repos() -> Iterator[Repo]:
-    # `github` is captured from the enclosing scope
-    requests.get(f"{github.base_url}/repos", ...)
+source.get_resource_meta(name: str) -> _ResourceMeta
 ```
+
+Returns the internal metadata for a resource.
+
+## Subclasses
+
+FastELT provides specialized Source subclasses:
+
+- [`RESTAPISource`](rest-api-source.md) — declarative REST API extraction
+- [`LocalFileSystemSource`](filesystem-source.md) — load files from local disk
+- [`GCSFileSystemSource`](filesystem-source.md) — load files from Google Cloud Storage

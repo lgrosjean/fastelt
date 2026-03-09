@@ -24,22 +24,31 @@ FastELT provides optional extras for additional functionality:
 
     Adds the `fastelt` command-line interface powered by [Typer](https://typer.tiangolo.com/).
 
-=== "Parquet support"
+=== "REST API source"
 
     ```bash
-    pip install fastelt[parquet]
+    pip install fastelt[rest_api]
     ```
 
-    Adds Parquet read/write via [PyArrow](https://arrow.apache.org/docs/python/).
+    Enables `RESTAPISource` for declarative REST API extraction via dlt's `rest_api` source.
+
+=== "Filesystem sources"
+
+    ```bash
+    pip install fastelt[filesystem]
+    ```
+
+    Enables `LocalFileSystemSource` and `GCSFileSystemSource` for loading files from disk or cloud storage.
 
 === "All extras"
 
     ```bash
-    pip install fastelt[cli,parquet]
+    pip install fastelt[cli,rest_api,filesystem]
     ```
 
 ## Requirements
 
 - Python >= 3.12
+- [dlt](https://dlthub.com/) (installed automatically)
 - [Pydantic](https://docs.pydantic.dev/) >= 2.0 (installed automatically)
 - [Loguru](https://loguru.readthedocs.io/) >= 0.7 (installed automatically)

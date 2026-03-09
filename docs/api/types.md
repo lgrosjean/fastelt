@@ -1,58 +1,103 @@
 # Types
 
-Internal types used by FastELT. You typically don't interact with these directly, but they are useful for building custom plugins or advanced integrations.
+Core types used by FastELT.
 
-## ExtractorRegistration
+## Env
 
 ```python
-from fastelt.types import ExtractorRegistration
+from fastelt import Env
 ```
 
-Dataclass holding the registration data for an extractor.
+Lazy reference to an environment variable. Can be used as a value or as a type annotation with `Annotated`.
+
+### Constructor
+
+```python
+Env(var: str, default: str = _UNSET)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `var` | `str` | Environment variable name |
+| `default` | `str` | Fallback value if env var is not set |
+
+### Methods
+
+#### `resolve()`
+
+```python
+env.resolve() -> str
+```
+
+Return the current value of the environment variable.
+
+**Raises:** `EnvironmentError` if the variable is not set and no default was provided.
+
+### Usage
+
+```python
+# As a Source field value (resolved at construction time)
+github = Source(name="github", token=Env("GH_TOKEN"))
+
+# As an Annotated type hint (resolved at resource call time)
+@source.resource()
+def repos(token: Annotated[str, Env("GH_TOKEN")]):
+    ...
+```
+
+---
+
+## Secret
+
+```python
+from fastelt import Secret
+```
+
+Like `Env` but masks the value in logs and repr. Use for sensitive values (API keys, tokens, passwords).
+
+Subclass of `Env` — same constructor and `resolve()` method.
+
+```python
+# repr shows: Secret('GH_TOKEN') instead of the actual value
+github = Source(name="github", token=Secret("GH_TOKEN"))
+```
+
+---
+
+## SchemaFrozenError
+
+```python
+from fastelt import SchemaFrozenError
+```
+
+Raised when extra columns are detected on a resource with `frozen=True`.
+
+```python
+try:
+    app.run()
+except SchemaFrozenError as e:
+    print(e)
+    # Resource 'users' is frozen but received new columns: ['unknown'].
+    # Update the response_model to accept them or remove frozen=True.
+```
+
+---
+
+## _ResourceMeta
+
+Internal dataclass holding metadata for a registered resource.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `str` | Registration key |
-| `func` | `Callable` | The extractor function |
-| `config_model` | `type[BaseModel]` | Auto-generated Pydantic config model |
-| `record_type` | `type[BaseModel]` | The record model (`T` from `Iterator[T]`) |
+| `func` | `Callable` | The resource generator function |
+| `name` | `str` | Resource name |
 | `description` | `str \| None` | Human-readable description |
 | `tags` | `list[str]` | Categorization tags |
-| `deprecated` | `bool` | Whether the extractor is deprecated |
-| `primary_key` | `str \| list[str] \| None` | Identity key(s) |
-
-## LoaderRegistration
-
-```python
-from fastelt.types import LoaderRegistration
-```
-
-Dataclass holding the registration data for a loader.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `str` | Registration key |
-| `func` | `Callable` | The loader function |
-| `config_model` | `type[BaseModel]` | Auto-generated Pydantic config model |
-| `record_type` | `type[BaseModel] \| None` | Expected record type (from `Records[T]`), or `None` |
-| `records_param` | `str \| None` | Name of the `Records` parameter, or `None` |
-
-## PluginGroup
-
-```python
-from fastelt.types import PluginGroup
-```
-
-Container for a set of extractors and loaders, used by built-in plugins and `Source._build_plugin_group()`.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `extractors` | `dict[str, ExtractorRegistration]` | Extractor registrations |
-| `loaders` | `dict[str, LoaderRegistration]` | Loader registrations |
-
-```python
-from fastelt.extractors.csv import csv_extractor
-
-plugin: PluginGroup = csv_extractor(User)
-app.include(plugin)
-```
+| `deprecated` | `bool` | Whether the resource is deprecated |
+| `primary_key` | `str \| list[str] \| None` | Primary key column(s) |
+| `write_disposition` | `str` | Write disposition (`"append"`, `"replace"`, `"merge"`) |
+| `merge_key` | `str \| list[str] \| None` | Merge key column(s) |
+| `table_name` | `str \| None` | Destination table name |
+| `selected` | `bool` | Whether the resource runs by default |
+| `response_model` | `type[BaseModel] \| None` | Pydantic model for validation |
+| `frozen` | `bool` | Whether extra columns raise an error |
