@@ -1,6 +1,6 @@
 [project]
 name = "fastelt"
-version = "0.1.0rc2"
+version = "0.1.0.dev20260309"
 readme = "README.md"
 authors = [
     { name = "Léo Grosjean", email = "leo.grosjean@live.com" }
@@ -15,7 +15,6 @@ dependencies = [
 
 [project.optional-dependencies]
 cli = ["typer>=0.9"]
-rest_api = ["dlt[rest_api]>=1.0"]
 filesystem = ["dlt[filesystem]>=1.0"]
 gcs = ["dlt[filesystem]>=1.0", "gcsfs"]
 parquet = ["pyarrow"]
