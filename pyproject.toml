@@ -19,7 +19,7 @@ rest_api = ["dlt[rest_api]>=1.0"]
 filesystem = ["dlt[filesystem]>=1.0"]
 gcs = ["dlt[filesystem]>=1.0", "gcsfs"]
 parquet = ["pyarrow"]
-dev = ["pytest>=7.0", "duckdb"]
+dev = ["pytest>=7.0", "duckdb", "pandas"]
 docs = ["zensical"]
 
 [project.scripts]
