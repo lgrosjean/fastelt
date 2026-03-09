@@ -5,7 +5,8 @@ authentication, incremental loading, and schema inference automatically.
 
 Usage::
 
-    from fastelt import FastELT, Env
+    from fastelt import FastELT
+    from fastelt.config import Env
     from fastelt.rest_api import RESTAPISource
 
     github = RESTAPISource(

@@ -14,7 +14,7 @@ def resolve_env_values(obj: Any) -> Any:
     Works on dicts, lists, and scalar values.  Non-Env values are returned as-is.
     """
     # Import here to avoid circular import (types.py imports nothing from _utils)
-    from fastelt.types import Env
+    from fastelt.config import Env
 
     if isinstance(obj, Env):
         return obj.resolve()

@@ -34,5 +34,6 @@ Usage::
 """
 
 from fastelt.sources.filesystem import GCSFileSystemSource, LocalFileSystemSource
+from fastelt.sources.types import Incremental
 
-__all__ = ["GCSFileSystemSource", "LocalFileSystemSource"]
+__all__ = ["GCSFileSystemSource", "Incremental", "LocalFileSystemSource"]

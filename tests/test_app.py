@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterator
+from typing import Annotated, Iterator
 
 import dlt
 import duckdb
 import pytest
 
 from fastelt import FastELT, Source
+from fastelt.destinations import DuckDBDestination
+from fastelt.sources import Incremental
 
 PIPELINES = []
 
@@ -36,10 +38,15 @@ def cleanup():
         _cleanup_pipeline(name)
 
 
-def _app(name: str, **kwargs) -> FastELT:
-    """Create an app and register it for cleanup."""
+db = DuckDBDestination()
+
+
+def _app(name: str) -> FastELT:
+    """Create an app with a duckdb destination and register it for cleanup."""
     PIPELINES.append(name)
-    return FastELT(pipeline_name=name, destination="duckdb", **kwargs)
+    app = FastELT(pipeline_name=name)
+    app.include_destination(db)
+    return app
 
 
 def _query(pipeline_name: str, sql: str):
@@ -93,6 +100,69 @@ def test_include_source_subclass_name():
     assert "githubsource" in app.list_sources()
 
 
+# -- Destination registration --
+
+
+def test_include_destination():
+    app = FastELT(pipeline_name="p_dest")
+    dest = DuckDBDestination()
+    app.include_destination(dest)
+    assert "duckdb" in app.list_destinations()
+
+
+def test_destination_name_from_class():
+    """Name is auto-derived from class name."""
+    from fastelt.destinations import BigQueryDestination
+
+    bq = BigQueryDestination(project_id="test")
+    assert bq.name == "bigquery"
+
+    ddb = DuckDBDestination()
+    assert ddb.name == "duckdb"
+
+
+def test_get_destination():
+    app = FastELT(pipeline_name="p_dest2")
+    dest = DuckDBDestination()
+    app.include_destination(dest)
+    assert app.get_destination("duckdb") is dest
+
+
+def test_get_destination_not_found():
+    app = FastELT(pipeline_name="p_dest3")
+    with pytest.raises(KeyError, match="nope"):
+        app.get_destination("nope")
+
+
+def test_run_unknown_destination_raises():
+    app = FastELT(pipeline_name="p_dest4")
+    src = Source(name="test")
+
+    @src.resource()
+    def items():
+        yield {"id": 1}
+
+    app.include_source(src)
+    with pytest.raises(KeyError, match="fake"):
+        app.run(destination="fake")
+
+
+def test_run_with_destination_object():
+    """app.run(destination=obj) auto-registers and runs."""
+    PIPELINES.append("p_dst_obj")
+    app = FastELT(pipeline_name="p_dst_obj")
+
+    @app.source("items")
+    def items():
+        yield {"id": 1}
+
+    dest = DuckDBDestination()
+    app.run(destination=dest)
+
+    rows = _query("p_dst_obj", "SELECT id FROM p_dst_obj_data.items")
+    assert len(rows) == 1
+
+
 # -- Pipeline execution --
 
 
@@ -107,7 +177,7 @@ def test_run_basic_pipeline():
         yield {"id": 2, "name": "Bob"}
 
     app.include_source(src)
-    app.run()
+    app.run(destination=db)
 
     rows = _query("p_basic", "SELECT id, name FROM p_basic_data.users ORDER BY id")
     assert len(rows) == 2
@@ -134,7 +204,7 @@ def test_run_multiple_sources():
     app.include_source(src_a)
     app.include_source(src_b)
 
-    result = app.run()
+    result = app.run(destination=db)
     assert isinstance(result, list)
     assert len(result) == 2
 
@@ -159,7 +229,7 @@ def test_run_selective_source():
     app.include_source(src_b)
 
     # Only run alpha
-    app.run(source="alpha")
+    app.run(destination=db, source="alpha")
 
     tables = _query(
         "p_sel_src",
@@ -184,7 +254,7 @@ def test_run_selective_resources():
         yield {"id": 100, "amount": 42}
 
     app.include_source(src)
-    app.run(resources=["users"])
+    app.run(destination=db, resources=["users"])
 
     tables = _query(
         "p_sel_res",
@@ -197,19 +267,6 @@ def test_run_selective_resources():
 # -- Error handling --
 
 
-def test_run_no_destination_raises():
-    app = FastELT(pipeline_name="p_err")
-    src = Source(name="test")
-
-    @src.resource()
-    def items():
-        yield {"id": 1}
-
-    app.include_source(src)
-    with pytest.raises(ValueError, match="No destination"):
-        app.run()
-
-
 def test_run_unknown_source_raises():
     app = _app("p_err2")
     src = Source(name="real")
@@ -220,13 +277,13 @@ def test_run_unknown_source_raises():
 
     app.include_source(src)
     with pytest.raises(KeyError, match="fake"):
-        app.run(source="fake")
+        app.run(destination=db, source="fake")
 
 
 def test_run_no_sources_raises():
     app = _app("p_err3")
     with pytest.raises(ValueError, match="No sources"):
-        app.run()
+        app.run(destination=db)
 
 
 # -- Write dispositions --
@@ -243,7 +300,7 @@ def test_write_disposition_merge():
         yield {"id": 2, "name": "Bob", "age": 25}
 
     app.include_source(src)
-    app.run()
+    app.run(destination=db)
 
     # Second run with updated data
     src2 = Source(name="data")
@@ -255,7 +312,7 @@ def test_write_disposition_merge():
 
     app2 = _app("p_merge")
     app2.include_source(src2)
-    app2.run()
+    app2.run(destination=db)
 
     rows = _query("p_merge", "SELECT id, name, age FROM p_merge_data.users ORDER BY id")
     assert len(rows) == 3
@@ -268,17 +325,17 @@ def test_write_disposition_merge():
 
 
 def test_incremental_loading():
-    """dlt.sources.incremental tracks cursor between runs."""
+    """Annotated[str, Incremental(...)] tracks cursor between runs."""
     app = _app("p_incr")
     src = Source(name="events")
 
     @src.resource(primary_key="id", write_disposition="append")
-    def events(updated_at=dlt.sources.incremental("updated_at", initial_value="2024-01-01")):
+    def events(updated_at: Annotated[str, Incremental(initial_value="2024-01-01")]):
         yield {"id": 1, "name": "a", "updated_at": "2024-06-01"}
         yield {"id": 2, "name": "b", "updated_at": "2024-07-01"}
 
     app.include_source(src)
-    app.run()
+    app.run(destination=db)
 
     rows = _query("p_incr", "SELECT id FROM p_incr_data.events ORDER BY id")
     assert len(rows) == 2
@@ -302,7 +359,7 @@ def test_source_with_injection():
 
     app = _app("p_inject")
     app.include_source(src, name="my")
-    app.run()
+    app.run(destination=db)
 
     rows = _query("p_inject", "SELECT org FROM p_inject_data.repos")
     assert rows[0][0] == "test_org"
@@ -348,24 +405,6 @@ def test_list_resources_by_source():
     assert result == {"mydata": ["users", "orders"]}
 
 
-def test_destination_override_at_run():
-    """Destination can be overridden per-run."""
-    app = FastELT(pipeline_name="p_override")
-    src = Source(name="test")
-
-    @src.resource()
-    def items():
-        yield {"id": 1}
-
-    app.include_source(src)
-    PIPELINES.append("p_override")
-
-    # Override destination at run time
-    app.run(destination="duckdb")
-    rows = _query("p_override", "SELECT id FROM p_override_data.items")
-    assert len(rows) == 1
-
-
 # -- @app.source() decorator --
 
 
@@ -379,7 +418,7 @@ def test_app_source_decorator():
         yield {"id": 2, "name": "Bob"}
 
     assert "users" in app.list_sources()
-    app.run()
+    app.run(destination=db)
 
     rows = _query("p_app_src", "SELECT name FROM p_app_src_data.users ORDER BY id")
     assert [r[0] for r in rows] == ["Alice", "Bob"]
@@ -404,8 +443,83 @@ def test_app_source_decorator_write_disposition():
     def items():
         yield {"id": 1, "val": "a"}
 
-    app.run()
-    app.run()  # second run should replace, not append
+    app.run(destination=db)
+    app.run(destination=db)  # second run should replace, not append
 
     rows = _query("p_app_wd", "SELECT COUNT(*) FROM p_app_wd_data.items")
     assert rows[0][0] == 1
+
+
+# -- Destination with extra fields --
+
+
+def test_bigquery_destination_fields():
+    """BigQueryDestination has typed fields."""
+    from fastelt.destinations import BigQueryDestination
+
+    bq = BigQueryDestination(
+        project_id="my-project",
+        location="EU",
+        dataset_name="analytics",
+    )
+    assert bq.name == "bigquery"
+    assert bq.destination_type == "bigquery"
+    assert bq.dataset_name == "analytics"
+    assert bq.project_id == "my-project"
+    assert bq.location == "EU"
+
+
+def test_destination_dataset_name_used():
+    """Destination's dataset_name is used by pipeline."""
+    app = FastELT(pipeline_name="p_ds")
+    PIPELINES.append("p_ds")
+    dest = DuckDBDestination(dataset_name="custom_ds")
+
+    @app.source("items")
+    def items():
+        yield {"id": 1}
+
+    app.run(destination=dest)
+
+    rows = _query("p_ds", "SELECT id FROM custom_ds.items")
+    assert len(rows) == 1
+
+
+# -- @app.destination() decorator --
+
+
+def test_app_destination_decorator():
+    """@app.destination() registers a custom sink function."""
+    PIPELINES.append("p_custom_dest")
+    app = FastELT(pipeline_name="p_custom_dest")
+    received = []
+
+    @app.destination(batch_size=10)
+    def my_sink(items, table):
+        for item in items:
+            received.append({"table": table["name"], **item})
+
+    @app.source("users")
+    def users():
+        yield {"id": 1, "name": "Alice"}
+        yield {"id": 2, "name": "Bob"}
+
+    assert "my_sink" in app.list_destinations()
+    app.run(destination=my_sink)
+
+    assert len(received) == 2
+    assert received[0]["table"] == "users"
+    assert received[0]["name"] == "Alice"
+    assert received[1]["name"] == "Bob"
+
+
+def test_app_destination_decorator_name():
+    """@app.destination() uses function name as destination name."""
+    app = FastELT(pipeline_name="p_dest_name")
+
+    @app.destination()
+    def warehouse(items, table):
+        pass
+
+    assert warehouse.name == "warehouse"
+    assert "warehouse" in app.list_destinations()

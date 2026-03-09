@@ -6,7 +6,9 @@ dlt handles pagination, incremental loading, and schema inference.
 Usage:  GH_TOKEN=ghp_... python example/github_rest_api.py
 """
 
-from fastelt import Env, FastELT
+from fastelt import FastELT
+from fastelt.config import Env
+from fastelt.destinations import DuckDBDestination
 from fastelt.rest_api import RESTAPISource
 
 # --- GitHub API source (declarative — no code needed) ---
@@ -89,20 +91,16 @@ github = RESTAPISource(
 
 # --- App ---
 
-app = FastELT(
-    pipeline_name="github_pipeline",
-    destination="duckdb",
-    dataset_name="raw_github",
-)
+db = DuckDBDestination(dataset_name="raw_github")
+
+app = FastELT(pipeline_name="github_pipeline")
+app.include_destination(db)
 app.include_source(github)
 
 if __name__ == "__main__":
     # Run all resources
-    info = app.run()
+    info = app.run(destination=db)
     print(f"Pipeline completed: {info}")
 
     # Or run just repos:
-    # info = app.run(resources=["repos"])
-
-    # Or run to a different destination:
-    # info = app.run(destination="postgres", dataset_name="github_data")
+    # info = app.run(destination=db, resources=["repos"])

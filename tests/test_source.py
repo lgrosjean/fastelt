@@ -7,7 +7,8 @@ from typing import Annotated, Iterator
 
 import pytest
 
-from fastelt import Env, Secret, Source
+from fastelt import Source
+from fastelt.config import Env, Secret
 
 
 class GitHubSource(Source):

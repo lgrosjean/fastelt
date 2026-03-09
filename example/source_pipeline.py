@@ -1,4 +1,4 @@
-"""Example: Custom Source with @resource decorators + dlt incremental.
+"""Example: Custom Source with @resource decorators + Incremental.
 
 For APIs that need custom extraction logic (pagination, transformation,
 business logic), use Source + @resource decorators.
@@ -10,11 +10,14 @@ Usage:    GH_TOKEN=ghp_... python example/source_pipeline.py
 """
 
 from collections.abc import Iterator
+from typing import Annotated
 
-import dlt
 import httpx
 
-from fastelt import Env, FastELT, Source
+from fastelt import FastELT, Source
+from fastelt.config import Env
+from fastelt.destinations import DuckDBDestination
+from fastelt.sources import Incremental
 
 # --- Custom source with shared config ---
 
@@ -32,7 +35,7 @@ github = Source(
     description="Fetch repositories with custom star filtering",
 )
 def repositories(
-    updated_at=dlt.sources.incremental("updated_at", initial_value="2020-01-01"),
+    updated_at: Annotated[str, Incremental(initial_value="2020-01-01")],
     min_stars: int = 0,
 ) -> Iterator[dict]:
     """Custom logic: filter by star count (not possible with RESTAPISource)."""
@@ -57,13 +60,12 @@ def repositories(
 
 # --- App ---
 
-app = FastELT(
-    pipeline_name="github_custom",
-    destination="duckdb",
-    dataset_name="raw_github",
-)
+db = DuckDBDestination(dataset_name="raw_github")
+
+app = FastELT(pipeline_name="github_custom")
+app.include_destination(db)
 app.include_source(github)
 
 if __name__ == "__main__":
-    info = app.run()
+    info = app.run(destination=db)
     print(f"Pipeline completed: {info}")

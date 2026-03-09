@@ -22,17 +22,9 @@ AppPathOpt = Annotated[
     str | None,
     typer.Option("--app", help="App import path (module:attr)"),
 ]
-DestinationOpt = Annotated[
-    str | None,
-    typer.Option("--destination", "-d", help="dlt destination (duckdb, postgres, bigquery, ...)"),
-]
 DatasetOpt = Annotated[
     str | None,
     typer.Option("--dataset", help="Dataset/schema name at the destination"),
-]
-SourceOpt = Annotated[
-    str | None,
-    typer.Option("--source", "-s", help="Run only this source"),
 ]
 ResourcesOpt = Annotated[
     list[str] | None,
@@ -118,18 +110,16 @@ def _discover_app(app_path: str | None = None) -> FastELT:
 
 @cli_app.command()
 def run(
+    destination: Annotated[str, typer.Argument(help="Destination name")],
+    source: Annotated[str | None, typer.Argument(help="Source name (omit to run all sources)")] = None,
     app_path: AppPathOpt = None,
-    destination: DestinationOpt = None,
     dataset: DatasetOpt = None,
-    source: SourceOpt = None,
     resources: ResourcesOpt = None,
 ) -> None:
     """Run the pipeline — extract from sources, load to destination."""
     app = _discover_app(app_path)
 
-    kwargs: dict = {}
-    if destination:
-        kwargs["destination"] = destination
+    kwargs: dict = {"destination": destination}
     if dataset:
         kwargs["dataset_name"] = dataset
     if source:
@@ -145,28 +135,39 @@ def run(
 def list_components(
     app_path: AppPathOpt = None,
 ) -> None:
-    """List registered sources and their resources."""
+    """List registered sources, destinations, and their resources."""
     app = _discover_app(app_path)
 
+    # Destinations
+    destinations = app.list_destinations()
+    if destinations:
+        typer.echo("Destinations:")
+        for dest_name in destinations:
+            dest = app.get_destination(dest_name)
+            typer.echo(f"  - {dest_name} ({dest.destination_type})")
+        typer.echo()
+
+    # Sources
     sources = app.list_sources()
     if not sources:
         typer.echo("No sources registered.")
         return
 
     all_resources = app.list_resources()
+    typer.echo("Sources:")
     for src_name in sources:
         res_names = all_resources.get(src_name, [])
-        typer.echo(f"Source: {src_name} ({len(res_names)} resources)")
+        typer.echo(f"  - {src_name} ({len(res_names)} resources)")
         for res_name in res_names:
-            typer.echo(f"  - {res_name}")
+            typer.echo(f"      {res_name}")
 
 
 @cli_app.command()
 def describe(
-    name: Annotated[str, typer.Argument(help="Source or source:resource name")],
+    name: Annotated[str, typer.Argument(help="Source, destination, or source:resource name")],
     app_path: AppPathOpt = None,
 ) -> None:
-    """Describe a source or resource."""
+    """Describe a source, destination, or resource."""
     app = _discover_app(app_path)
 
     if ":" in name:
@@ -188,10 +189,20 @@ def describe(
         if meta.merge_key:
             mk = meta.merge_key if isinstance(meta.merge_key, str) else ", ".join(meta.merge_key)
             typer.echo(f"  Merge key: {mk}")
+    elif name in app.list_destinations():
+        dest = app.get_destination(name)
+        typer.echo(f"Destination: {name}")
+        typer.echo(f"  Type: {dest.destination_type}")
+        if dest.dataset_name:
+            typer.echo(f"  Dataset: {dest.dataset_name}")
+        # Show extra fields
+        for field_name in dest.model_fields:
+            if field_name not in ("name", "destination_type", "dataset_name"):
+                typer.echo(f"  {field_name}: {getattr(dest, field_name)}")
     elif name in app.list_sources():
         src = app.get_source(name)
         typer.echo(f"Source: {name}")
         typer.echo(f"  Resources: {', '.join(src.list_resources())}")
     else:
-        typer.echo(f"'{name}' not found. Use 'fastelt list' to see available sources.")
+        typer.echo(f"'{name}' not found. Use 'fastelt list' to see available components.")
         raise typer.Exit(1)

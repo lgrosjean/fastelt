@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 from pydantic.alias_generators import to_snake
 
 from fastelt import FastELT, SchemaFrozenError, Source
+from fastelt.destinations import DuckDBDestination
 
 PIPELINES: list[str] = []
 
@@ -43,9 +44,14 @@ def cleanup():
         _cleanup_pipeline(name)
 
 
-def _app(name: str, **kwargs) -> FastELT:
+db = DuckDBDestination()
+
+
+def _app(name: str) -> FastELT:
     PIPELINES.append(name)
-    return FastELT(pipeline_name=name, destination="duckdb", **kwargs)
+    app = FastELT(pipeline_name=name)
+    app.include_destination(db)
+    return app
 
 
 def _query(pipeline_name: str, sql: str):
@@ -368,7 +374,7 @@ def test_pipeline_with_response_model():
         yield {"id": "2", "name": "Bob", "age": "25"}
 
     app.include_source(src)
-    app.run()
+    app.run(destination=db)
 
     rows = _query("p_val", "SELECT id, name, age FROM p_val_data.users ORDER BY id")
     assert rows[0] == (1, "Alice", 30)
@@ -383,7 +389,7 @@ def test_app_source_decorator_with_response_model():
     def users():
         yield {"id": "1", "name": "Alice", "age": "30"}
 
-    app.run()
+    app.run(destination=db)
 
     rows = _query("p_app_val", "SELECT id, age FROM p_app_val_data.users")
     assert rows[0] == (1, 30)

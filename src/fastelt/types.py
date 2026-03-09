@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import functools
 import inspect
-import os
 import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -22,71 +21,7 @@ import dlt
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, create_model
 
-_UNSET = object()
-
-
-class Env:
-    """Lazy reference to an environment variable.
-
-    Can be used as a value or as a type annotation with ``Annotated``.
-
-    Usage::
-
-        from fastelt import Env, Source
-
-        # As a value (resolved at Source construction):
-        github = Source(
-            name="github",
-            token=Env("GH_TOKEN"),
-        )
-
-        # As an Annotated type hint (resolved at resource call time):
-        @source.resource()
-        def repos(token: Annotated[str, Env("GH_TOKEN")]):
-            ...
-    """
-
-    __slots__ = ("_var", "_default")
-
-    def __init__(self, var: str, default: str = _UNSET) -> None:  # type: ignore[assignment]
-        self._var = var
-        self._default = default
-
-    def resolve(self) -> str:
-        """Return the current value of the environment variable."""
-        value = os.environ.get(self._var, self._default)
-        if value is _UNSET:
-            raise EnvironmentError(
-                f"Environment variable '{self._var}' is not set and no default was provided"
-            )
-        return value  # type: ignore[return-value]
-
-    def __repr__(self) -> str:
-        if self._default is _UNSET:
-            return f"Env({self._var!r})"
-        return f"Env({self._var!r}, default={self._default!r})"
-
-
-class Secret(Env):
-    """Like ``Env`` but masks the value in logs and repr.
-
-    Use for sensitive values (API keys, tokens, passwords).
-
-    Usage::
-
-        from fastelt import Secret, Source
-
-        # As a value:
-        github = Source(name="github", token=Secret("GH_TOKEN"))
-
-        # As an Annotated type hint:
-        @source.resource()
-        def repos(token: Annotated[str, Secret("GH_TOKEN")]):
-            ...
-    """
-
-    def __repr__(self) -> str:
-        return f"Secret({self._var!r})"
+from fastelt.config import Env, Secret
 
 
 class SchemaFrozenError(Exception):
@@ -177,18 +112,21 @@ def _wrap_with_validation(
 
 
 def _resolve_env_params(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Auto-resolve environment variables from function parameters.
+    """Auto-resolve environment variables and incremental cursors from parameters.
 
     Resolution rules (in priority order):
 
     1. ``Annotated[str, Env("CUSTOM_VAR")]`` → resolve from ``CUSTOM_VAR``
     2. ``Annotated[str, Secret("CUSTOM_VAR")]`` → resolve from ``CUSTOM_VAR`` (masked)
-    3. ``param_name: str`` → resolve from ``PARAM_NAME`` (uppercased)
-    4. ``param_name: str = "default"`` → resolve from ``PARAM_NAME``, fallback to ``"default"``
+    3. ``Annotated[str, Incremental(...)]`` → inject ``dlt.sources.incremental``
+    4. ``param_name: str`` → resolve from ``PARAM_NAME`` (uppercased)
+    5. ``param_name: str = "default"`` → resolve from ``PARAM_NAME``, fallback to ``"default"``
 
     Like FastAPI auto-resolves ``Query()``, ``Path()`` from type hints,
-    fastELT auto-resolves env vars from ``str``-typed parameters.
+    fastELT auto-resolves env vars and incremental cursors from annotations.
     """
+    from fastelt.sources.types import Incremental
+
     try:
         hints = inspect.get_annotations(func, eval_str=True)
     except NameError:
@@ -196,17 +134,22 @@ def _resolve_env_params(func: Callable[..., Any]) -> Callable[..., Any]:
 
     sig = inspect.signature(func)
 
-    # Collect params to resolve: param_name -> Env instance
+    # Collect params to resolve
     env_params: dict[str, Env] = {}
+    incremental_params: dict[str, Incremental] = {}
+
     for param_name, param in sig.parameters.items():
         hint = hints.get(param_name)
         if hint is None:
             continue
 
-        # Priority 1: Annotated[str, Env(...)] or Annotated[str, Secret(...)]
+        # Priority 1: Annotated[str, Env/Secret/Incremental]
         if get_origin(hint) is Annotated:
             args = get_args(hint)
             for arg in args[1:]:
+                if isinstance(arg, Incremental):
+                    incremental_params[param_name] = arg
+                    break
                 if isinstance(arg, Env):
                     env_params[param_name] = arg
                     break
@@ -220,24 +163,37 @@ def _resolve_env_params(func: Callable[..., Any]) -> Callable[..., Any]:
             else:
                 env_params[param_name] = Env(var_name)
 
-    if not env_params:
+    if not env_params and not incremental_params:
         return func
 
-    # Strip env-injected params from the visible signature
-    remaining_params = [
-        p for p in sig.parameters.values() if p.name not in env_params
-    ]
+    # Build final signature:
+    # - env params: stripped (injected at call time)
+    # - incremental params: kept with dlt.sources.incremental as default (dlt handles them)
+    final_params = []
+    for p in sig.parameters.values():
+        if p.name in env_params:
+            continue  # stripped — resolved at call time
+        if p.name in incremental_params:
+            inc = incremental_params[p.name]
+            final_params.append(
+                p.replace(
+                    default=inc.resolve(p.name),
+                    annotation=inspect.Parameter.empty,
+                )
+            )
+        else:
+            final_params.append(p)
 
     @functools.wraps(func)
-    def wrapper(**kwargs: Any) -> Any:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         for param_name, env in env_params.items():
             if param_name not in kwargs:
                 kwargs[param_name] = env.resolve()
-        return func(**kwargs)
+        return func(*args, **kwargs)
 
-    wrapper.__signature__ = sig.replace(parameters=remaining_params)  # type: ignore[attr-defined]
+    wrapper.__signature__ = sig.replace(parameters=final_params)  # type: ignore[attr-defined]
     wrapper.__annotations__ = {
-        k: v for k, v in hints.items() if k not in env_params
+        k: v for k, v in hints.items() if k not in env_params and k not in incremental_params
     }
     return wrapper
 
@@ -283,7 +239,7 @@ class Source(BaseModel):
 
         @github.resource(primary_key="id", write_disposition="merge")
         def repositories(
-            updated_at=dlt.sources.incremental("updated_at"),
+            updated_at: Annotated[str, Incremental()],
         ) -> Iterator[dict]:
             ...
 

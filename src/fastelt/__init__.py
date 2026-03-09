@@ -6,12 +6,19 @@ schema evolution, merge strategies) with FastAPI's developer experience.
 """
 
 from fastelt.app import FastELT
+from fastelt.config import Env, Secret
+from fastelt.destinations import BigQueryDestination, Destination, DuckDBDestination
 from fastelt.rest_api import RESTAPISource
-from fastelt.types import Env, SchemaFrozenError, Secret, Source
+from fastelt.sources.types import Incremental
+from fastelt.types import SchemaFrozenError, Source
 
 __all__ = [
+    "BigQueryDestination",
+    "Destination",
+    "DuckDBDestination",
     "Env",
     "FastELT",
+    "Incremental",
     "RESTAPISource",
     "SchemaFrozenError",
     "Secret",

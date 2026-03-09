@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 from pydantic.alias_generators import to_snake
 
 from fastelt import FastELT, Source
+from fastelt.destinations import DuckDBDestination
 
 
 # --- Pydantic model for data validation ---
@@ -73,10 +74,13 @@ def users():
 
 
 # Wire up
-app = FastELT(pipeline_name="local_pipeline", destination="duckdb")
+db = DuckDBDestination()
+
+app = FastELT(pipeline_name="local_pipeline")
+app.include_destination(db)
 app.include_source(local_data)
 
 if __name__ == "__main__":
-    info = app.run()
+    info = app.run(destination=db)
     print(f"Done! {info}")
     print("Data loaded into local_pipeline.duckdb")
