@@ -1,22 +1,4 @@
-"""Destination configuration for fastELT.
-
-A ``Destination`` is a declarative config object describing where data is loaded.
-Subclass it to create typed destinations, or use the built-in ones.
-
-Usage::
-
-    from fastelt.destinations import BigQueryDestination
-
-    bq = BigQueryDestination(
-        project_id="my-project",
-        location="EU",
-        dataset_name="analytics",
-        credentials=Secret("BQ_CREDENTIALS"),
-    )
-
-    app.include_destination(bq)
-    app.run(destination=bq)
-"""
+"""Base Destination and CustomDestination classes."""
 
 from __future__ import annotations
 
@@ -93,48 +75,6 @@ class Destination(BaseModel):
         if self.dataset_name:
             kwargs["dataset_name"] = self.dataset_name
         return kwargs
-
-
-class DuckDBDestination(Destination):
-    """DuckDB destination (local file-based analytics database).
-
-    Usage::
-
-        from fastelt.destinations import DuckDBDestination
-
-        db = DuckDBDestination(database="my_pipeline.duckdb")
-
-        app.include_destination(db)
-        app.run(destination=db)
-    """
-
-    destination_type: str = "duckdb"
-    database: str | None = None
-
-
-class BigQueryDestination(Destination):
-    """Google BigQuery destination.
-
-    Usage::
-
-        from fastelt.destinations import BigQueryDestination
-        from fastelt.config import Secret
-
-        bq = BigQueryDestination(
-            project_id="my-project",
-            location="EU",
-            dataset_name="analytics",
-            credentials=Secret("GOOGLE_APPLICATION_CREDENTIALS"),
-        )
-
-        app.include_destination(bq)
-        app.run(destination=bq)
-    """
-
-    destination_type: str = "bigquery"
-    project_id: str | None = None
-    location: str = "US"
-    credentials: str | None = None
 
 
 class CustomDestination(Destination):
